@@ -1,4 +1,7 @@
 #!/bin/bash
+# VirtualBuddy 2.1 installation script
+# https://github.com/insidegui/VirtualBuddy/releases/tag/2.1
+
 export PATH=$PATH:/sbin:/usr/sbin
 source "common.sh"
 trap 'finally_dmg "$dmg_mount_point" $?' EXIT SIGINT
