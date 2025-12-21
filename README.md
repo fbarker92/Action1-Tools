@@ -1,4 +1,4 @@
-# action1_software_repository
+# Action1 Software Repository
 
 Quick reference for repository layout, required files, templates and how to build application zips.
 
