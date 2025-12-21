@@ -1,4 +1,6 @@
 local_mnt/
+**/local_mnt/**
+local_mnt/**
 *.zip
 *.dmg
 *.pkg
