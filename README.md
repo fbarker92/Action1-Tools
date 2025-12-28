@@ -32,7 +32,7 @@ You may also place versions directly at repo root `<AppName>/<Version>/` if pref
 ## Required files
 - The version folder must contain the files you want in the zip (the script zips the contents of the version folder into the zip root).
 - `mac/build.sh` — packager script (executable).
-- - This will be unique to each package/version, but will mostly follow the same logic as the temmplate scripts
+    - This will be unique to each package/version, but will mostly follow the same logic as the temmplate scripts
 - `.gitignore` — should contain `local_mnt/` to ignore mount folders and build artifacts (zips, dmgs, pkgs).
 
 Example `.gitignore` entries:
