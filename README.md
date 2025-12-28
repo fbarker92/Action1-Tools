@@ -7,6 +7,7 @@ This repo contains mac application release folders and a helper `mac/build.sh` s
 
 ## Recommended folder layout
 Place application versions under `<Platform>/<AppName>/<Version>/`. Example:
+```bash
 .
 ├── build.sh
 ├── mac/
@@ -23,7 +24,8 @@ Place application versions under `<Platform>/<AppName>/<Version>/`. Example:
         └── 16.0.012/
             ├── Office.xml
             ├── Office.exe
-            └── any other release files     
+            └── any other release files
+```     
 
 You may also place versions directly at repo root `<AppName>/<Version>/` if preferred.
 
