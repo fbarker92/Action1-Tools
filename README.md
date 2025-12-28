@@ -7,21 +7,23 @@ This repo contains mac application release folders and a helper `mac/build.sh` s
 
 ## Recommended folder layout
 Place application versions under `<Platform>/<AppName>/<Version>/`. Example:
-- mac/
-  - VirtualBuddy/
-    - 2.1/
-      - VirtualBuddy.app
-      - install.sh
-      - any other release files
-  - MyApp/
-    - 1.0/
-   
-- windows/
-  - Office365Apps/
-    - 16.0.012
-      - Office.xml
-      - Office.exe
-      - any other release files     
+.
+├── build.sh
+├── mac/
+│   ├── VirtualBuddy/
+│   │   └── 2.1/
+│   │       ├── VirtualBuddy.app
+│   │       ├── install.sh
+│   │       ├── common.sh
+│   │       └── any other release files
+│   └── MyApp/
+│       └── 1.0/
+└── windows/
+    └── Office365Apps/
+        └── 16.0.012/
+            ├── Office.xml
+            ├── Office.exe
+            └── any other release files     
 
 You may also place versions directly at repo root `<AppName>/<Version>/` if preferred.
 
