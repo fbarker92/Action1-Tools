@@ -65,7 +65,9 @@ cd mac
 ./build.sh
 # prompts:
 #  Application name (e.g. VirtualBuddy):
+# # folder names are case-sensitive, so a fuzzy search feature has been implemented
 #  Version (e.g. 2.1):
+# # The script will try to automatically detect version folders and allow you to select one (the highest version number is the default)
 #  (if auto-detect fails) Source folder ... (tab completion supported)
 ```
 
@@ -100,6 +102,8 @@ cd mac
 ./build.sh
 # respond to prompts; use tab to complete ./ViartualBuddy/2.1 (or correct spelling)
 ```
+## Future improvements
+- Action1 API integration to automatically create and upload the app bundle to the relevant software repository
 
 ## Notes
 - Keep `.gitignore` updated to exclude build artifacts and `local_mnt` mount points.
