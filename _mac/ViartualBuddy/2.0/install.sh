@@ -1,6 +1,6 @@
 #!/bin/bash
-# UMT 4.7.5 installation script
-# https://github.com/utmapp/UTM/releases/tag/v4.7.5
+# VirtualBuddy 2.1 installation script
+# https://github.com/insidegui/VirtualBuddy/releases/tag/2.1
 
 export PATH=$PATH:/sbin:/usr/sbin
 source "common.sh"
@@ -28,19 +28,19 @@ new_app_ver="$b"
 log_level="$v"
 #log_level="DBG"
 
-### UTM install\update
+### VirtualBuddy install\update
 
 function main() {
   # internal parameters
-    display_name='UTM' # for messages only
+    display_name='VirtualBuddy' # for messages only
     log -m "$(printf 'start deploying "%s"' "$display_name")" -n "INFO"
 
-    proc_names=("UTM")  # array, f.e. ("process1" "process2")
+    proc_names=("VirtualBuddy")  # array, f.e. ("process1" "process2")
     dmg_mount_point='./local_mnt'
-    default_app_folder="UTM.app"
-    dmg_root_folder="${dmg_mount_point}/UTM"
+    default_app_folder="VirtualBuddy.app"
+    dmg_root_folder="${dmg_mount_point}/VirtualBuddy"
     src_app_folder="${dmg_root_folder}/${default_app_folder}"
-    binary_path="./${src_app_folder}/Contents/MacOS/UTM"
+    binary_path="./${src_app_folder}/Contents/MacOS/VirtualBuddy"
     get_setup_by_ext "dmg" && setup_file="$result" || exit $?
 
   # attach dmg file
@@ -52,7 +52,7 @@ function main() {
     else
         src_app_folder="${result}/${default_app_folder}"
     fi
-    binary_path="${src_app_folder}/Contents/MacOS/UTM"
+    binary_path="${src_app_folder}/Contents/MacOS/VirtualBuddy"
 
     if [[ "$deploy_mode" == 'install' ]]; then
         app_folder_name="$(basename "$src_app_folder")"

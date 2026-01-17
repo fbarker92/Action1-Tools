@@ -1,6 +1,6 @@
 #!/bin/bash
 # UMT 4.7.5 installation script
-# https://github.com/utmapp/UTM/releases/tag/v4.7.5
+# https://github.com/utmapp/UTM/releases/tag/v5.0.0
 
 export PATH=$PATH:/sbin:/usr/sbin
 source "common.sh"
@@ -28,7 +28,7 @@ new_app_ver="$b"
 log_level="$v"
 #log_level="DBG"
 
-### VirtualBuddy install\update
+### UTM install\update
 
 function main() {
   # internal parameters
@@ -52,7 +52,7 @@ function main() {
     else
         src_app_folder="${result}/${default_app_folder}"
     fi
-    binary_path="${src_app_folder}/Contents/MacOS/VirtualBuddy"
+    binary_path="${src_app_folder}/Contents/MacOS/UTM"
 
     if [[ "$deploy_mode" == 'install' ]]; then
         app_folder_name="$(basename "$src_app_folder")"
@@ -62,7 +62,6 @@ function main() {
 
   # test application binary architecture
     test_binary_arch "$binary_path" || exit $?
-
   # test running processes
     if [[ "$app_process_mode" == 'kill' ]]; then
         kill_process "${proc_names[@]}"
