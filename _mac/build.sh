@@ -389,14 +389,19 @@ create_zip_with_spinner() {
   spinner() {
     local pid=$1
     local delay=0.12
-    local spinstr='|/-\\'
+    local spin_chars=( '⣾' '⣽' '⣻' '⢿' '⡿' '⣟' '⣯' '⣷' )
+    local idx=0
+    # color codes (green)
+    local green=$'\033[32m'
+    local reset=$'\033[0m'
     while kill -0 "$pid" 2>/dev/null; do
-      for ((i=0;i<${#spinstr};i++)); do
-        printf '\rCreating: %s %c' "$out" "${spinstr:i:1}"
-        sleep "$delay"
-      done
+      # print the path and a green spinner glyph
+      printf '\rCreating: %s %s%s%s' "$out" "$green" "${spin_chars[idx]}" "$reset"
+      idx=$(( (idx + 1) % ${#spin_chars[@]} ))
+      sleep "$delay"
     done
-    printf '\r'
+    # clear the line (carriage return + erase to end of line)
+    printf '\r\033[K'
   }
 
   spinner "$zip_pid" &
@@ -407,6 +412,8 @@ create_zip_with_spinner() {
 
   kill "$spin_pid" 2>/dev/null || true
   wait "$spin_pid" 2>/dev/null || true
+  # ensure spinner output is cleared before printing result
+  printf '\r\033[K'
 
   if [[ $zip_rc -ne 0 ]]; then
     echo "zip failed with code $zip_rc" >&2

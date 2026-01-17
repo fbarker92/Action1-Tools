@@ -4,3 +4,4 @@ local_mnt/**
 *.zip
 *.dmg
 *.pkg
+.env

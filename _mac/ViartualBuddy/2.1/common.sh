@@ -58,12 +58,8 @@ function validate_params() {
         return $err_code
     fi
 
-    if [[ -z "$f" && "$m" == 'upgrade' ]]; then
-        #msg=$(printf 'Argument %s is empty. Exit code %s.' "-f" "$err_code")
-        msg=$(printf 'Target folder name was not specified for application update. Exit code: %s.' "$err_code")
-        echo "$msg" >&2; log -m "$msg" -n "ERR"
-        return $err_code
-    fi
+    # If -f (target folder for upgrade) is not provided we allow proceeding
+    # so the caller can auto-detect the mounted .app and decide install vs upgrade.
 
     p=${p:-"/Applications"}           # default value = "/Applications
     p=$(echo "$p" | sed 's/\/$//')    # remove last '/' if specified
@@ -136,14 +132,20 @@ function attach_dmg() {
     # Set result to the mounted volume path
     result="$mounted_vol"
 
-    # Check if app folder exists
+    # Check if app folder exists; detect any .app bundle inside the mounted volume
     local actual_app_folder
     if [[ -d "${mounted_vol}/Contents/MacOS" ]]; then
         actual_app_folder="$mounted_vol"
     else
-        actual_app_folder="${mounted_vol}/VirtualBuddy.app"
+        # Prefer .app bundles at the root of the mounted volume
+        actual_app_folder="$(find "$mounted_vol" -maxdepth 2 -type d -name '*.app' -print -quit 2>/dev/null || true)"
+        # Fallback to any .app anywhere under the volume
+        if [[ -z "$actual_app_folder" ]]; then
+            actual_app_folder="$(find "$mounted_vol" -type d -name '*.app' -print -quit 2>/dev/null || true)"
+        fi
     fi
-    if [[ ! -d "$actual_app_folder" ]]; then
+
+    if [[ -z "$actual_app_folder" || ! -d "$actual_app_folder" ]]; then
         exit_code=1
         msg=$(printf 'Mounted app folder "%s" does not exist. Exit code: %s' "$actual_app_folder" "$exit_code")
         echo "$msg" >&2; log -m "$msg" -n "ERR"
@@ -421,8 +423,8 @@ function test_process() {
 
     for p in "${proc_names[@]}"; do
         log -m "$(printf 'checking that the "%s" process does not exist.' "$p")" -n "INFO"
-        log -m "$(printf 'pgrep -i "%s"' "$p")" -n "DBG"
-		[[ $last_param = type:pid ]] && procs=$(ps -o pid= -p "$p") || procs=$(pgrep -d "," -i "$p")
+        log -m "$(printf 'pgrep -x -i "%s"' "$p")" -n "DBG"
+        [[ $last_param = type:pid ]] && procs=$(ps -o pid= -p "$p") || procs=$(pgrep -d "," -x -i "$p")
 
         if [[ -n $procs ]]; then
             exit_code=1
@@ -458,18 +460,18 @@ function kill_process() {
     local iter=$((timeout / sleep_interval))
 
     for p in "${proc_names[@]}"; do
-		[[ $last_param = type:pid ]] && procs=$(ps -o pid= -p "$p") || procs=$(pgrep -d "," -i "$p")
+        [[ $last_param = type:pid ]] && procs=$(ps -o pid= -p "$p") || procs=$(pgrep -d "," -x -i "$p")
 
         if [[ -n "$procs" ]]; then
             log -m "$(printf 'found: "%s"' "$procs")" -n "$log_lv" -n "INFO"
 
-			if [[ $last_param = type:pid ]]; then
+            if [[ $last_param = type:pid ]]; then
                 log -m "$(printf 'kill -SIGTERM "%s"' "$p")" -n "INFO"
-				kill -SIGTERM "$p"
-    		else
-                log -m "$(printf 'pkill -SIGTERM -i "%s"' "$p")" -n "INFO"
-				pkill -SIGTERM -i "$p"
-    		fi
+                kill -SIGTERM "$p"
+            else
+                log -m "$(printf 'pkill -SIGTERM -x -i "%s"' "$p")" -n "INFO"
+                pkill -SIGTERM -x -i "$p"
+            fi
         fi
     done
 
@@ -480,7 +482,7 @@ function kill_process() {
         for p in "${proc_names[@]}"; do
             log -m "$(printf 'checking that the "%s" process does not exist.' "$p")" -n "$log_lv"
 
-			[[ $last_param = type:pid ]] && procs=$(ps -o pid= -p "$p") || procs=$(pgrep -d "," -i "$p")
+            [[ $last_param = type:pid ]] && procs=$(ps -o pid= -p "$p") || procs=$(pgrep -d "," -x -i "$p")
 
             if [[ -n "$procs" ]]; then
                 log -m "$(printf 'Cannot proceed while the process "%s" (pid: %s) is running. Waiting for process termination.' "$p" "$procs")" -n "$log_lv"
@@ -501,14 +503,14 @@ function kill_process() {
     done
 
     if [[ "$proc_found" == "true" ]]; then
-        for p in "${proc_names[@]}"; do
+                for p in "${proc_names[@]}"; do
             if [[ $last_param = type:pid ]]; then
                 log -m "$(printf 'kill -SIGKILL "%s"' "$p")" -n "INFO"
-				kill -SIGKILL "$p" # hard kill
-    		else
-                log -m "$(printf 'pkill -SIGKILL -i "%s"' "$p")" -n "INFO"
-				pkill -SIGKILL -i "$p" # hard kill
-    		fi
+                kill -SIGKILL "$p" # hard kill
+            else
+                log -m "$(printf 'pkill -SIGKILL -x -i "%s"' "$p")" -n "INFO"
+                pkill -SIGKILL -x -i "$p" # hard kill
+            fi
         done
     fi
     return 0
@@ -520,11 +522,12 @@ function hardkill_process() {
     local msg; local proc_found; local procs; local log_lv
 
     for p in "${proc_names[@]}"; do
-        procs=$(pgrep -l -d "," -i "$p")
+        procs=$(pgrep -l -d "," -x -i "$p")
         if [[ -n "$procs" ]]; then
             log -m "$(printf 'found: "%s"' "$procs")" -n "$log_lv" -n "INFO"
             log -m "$(printf 'pkill -SIGKILL -i "%s"' "$p")" -n "INFO"
-            pkill -SIGKILL -i "$p" # hard kill
+            log -m "$(printf 'pkill -SIGKILL -x -i "%s"' "$p")" -n "INFO"
+            pkill -SIGKILL -x -i "$p" # hard kill
         fi
     done
     return 0
