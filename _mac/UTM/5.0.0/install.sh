@@ -54,10 +54,22 @@ function main() {
     fi
     binary_path="${src_app_folder}/Contents/MacOS/UTM"
 
-    if [[ "$deploy_mode" == 'install' ]]; then
-        app_folder_name="$(basename "$src_app_folder")"
+    # Determine the app folder name to deploy. If user provided -f use that.
+    detected_app_folder="$(basename "$src_app_folder")"
+
+    if [[ -n "$upgrade_app_folder" ]]; then
+      app_folder_name="$upgrade_app_folder"
     else
-        app_folder_name="$upgrade_app_folder"
+      # If -f not provided, detect whether the app already exists in target
+      if [[ -d "${inst_root_folder%/}/$detected_app_folder" ]]; then
+        deploy_mode='upgrade'
+        app_folder_name="$detected_app_folder"
+        log -m "Detected existing ${inst_root_folder%/}/$detected_app_folder; switching to upgrade mode" -n "INFO"
+      else
+        deploy_mode='install'
+        app_folder_name="$detected_app_folder"
+        log -m "No existing ${inst_root_folder%/}/$detected_app_folder found; switching to install mode" -n "INFO"
+      fi
     fi
 
   # test application binary architecture
@@ -72,6 +84,7 @@ function main() {
     fi
 
   # deploy software\update
+    log -m "Starting deployment: mode=${deploy_mode}, app_folder=${app_folder_name}, target=${inst_root_folder%/}" -n "INFO"
     copy_app_folder "$src_app_folder" "$inst_root_folder" "$app_folder_name" "$deploy_mode" || exit $?
 
   # detach_dmg, see in trap (finally_dmg)

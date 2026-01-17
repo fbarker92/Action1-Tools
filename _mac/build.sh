@@ -37,8 +37,217 @@ if [[ -t 0 ]]; then
   if [[ -z "$APP" ]]; then
     read -e -rp "Application name (e.g. VirtualBuddy): " APP
   fi
+  # If interactive and the entered app folder doesn't exist, offer fuzzy matches
+  if [[ -n "$APP" && -t 0 ]]; then
+    found_exact=false
+    bases=("$run_root" "$repo_root" "$repo_root/_mac" "$run_root/_mac")
+    for base in "${bases[@]}"; do
+      if [[ -d "$base/$APP" ]]; then found_exact=true; break; fi
+    done
+
+    if ! $found_exact; then
+      # gather candidate app basenames under the bases
+      mapfile -t raw_paths < <(find "${bases[@]}" -mindepth 1 -maxdepth 2 -type d 2>/dev/null || true)
+      declare -A seen_apps
+      app_names=()
+      for p in "${raw_paths[@]:-}"; do
+        b=$(basename "$p")
+        # skip empty or current dir
+        [[ -z "$b" || "$b" = "." ]] && continue
+        if [[ -z "${seen_apps[$b]:-}" ]]; then
+          seen_apps[$b]=1
+          app_names+=("$b")
+        fi
+      done
+
+      if [[ ${#app_names[@]} -gt 0 ]]; then
+        # compute Levenshtein distances using awk and sort
+        distances=()
+        for name in "${app_names[@]}"; do
+          dist=$(awk -v s="$APP" -v t="$name" 'BEGIN{
+            n=length(s); m=length(t);
+            for(i=0;i<=n;i++) d[i,0]=i;
+            for(j=0;j<=m;j++) d[0,j]=j;
+            for(i=1;i<=n;i++){ si=substr(s,i,1);
+              for(j=1;j<=m;j++){ tj=substr(t,j,1); cost=(si==tj)?0:1;
+                a=d[i-1,j]+1; b=d[i,j-1]+1; c=d[i-1,j-1]+cost;
+                v=a; if(b<v) v=b; if(c<v) v=c; d[i,j]=v }
+            }
+            print d[n,m]
+          }')
+          distances+=("$dist|$name")
+        done
+        IFS=$'\n' sorted_matches=($(printf '%s\n' "${distances[@]}" | sort -t'|' -k1,1n))
+        # present top 5 matches
+        choices=()
+        for s in "${sorted_matches[@]}"; do
+          choices+=("${s#*|}")
+          [[ ${#choices[@]} -ge 5 ]] && break
+        done
+
+        if [[ ${#choices[@]} -gt 0 ]]; then
+          echo "No exact app folder named '$APP' found. Close matches:"
+          i=1
+          for c in "${choices[@]}"; do
+            echo " [$i] $c"
+            ((i++))
+          done
+          echo " [0] Keep original / enter manual name"
+          read -e -rp "Choose number to use (or 0 to keep '$APP'): " ch
+          if [[ "$ch" =~ ^[0-9]+$ ]] && (( ch >= 1 && ch <= ${#choices[@]} )); then
+            APP="${choices[$((ch-1))]}"
+            echo "Using app name: $APP"
+          fi
+        fi
+      fi
+    fi
+  fi
   if [[ -z "$VER" ]]; then
-    read -e -rp "Version (e.g. 2.1): " VER
+    # Find candidate version folders for this APP (look in sensible roots)
+    candidates=()
+    for base in "$run_root" "$repo_root" "$repo_root/_mac" "$run_root/_mac"; do
+      if [[ -d "$base/$APP" ]]; then
+        for d in "$base/$APP"/*; do
+          [[ -d "$d" ]] && candidates+=("$d")
+        done
+      fi
+    done
+
+    # also do a wider find (limited depth) if nothing found yet
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+      mapfile -t found < <(find "$run_root" "$repo_root" -type d -path "*/$APP/*" -maxdepth 4 2>/dev/null || true)
+      for d in "${found[@]:-}"; do
+        candidates+=("$d")
+      done
+    fi
+
+    # dedupe
+    if [[ ${#candidates[@]} -gt 1 ]]; then
+      readarray -t candidates < <(printf '%s\n' "${candidates[@]}" | awk '!seen[$0]++')
+    fi
+
+    # remove empty entries and ensure candidates are directories
+    if [[ ${#candidates[@]} -gt 0 ]]; then
+      _tmp_candidates=()
+      for p in "${candidates[@]}"; do
+        if [[ -n "$p" && -d "$p" ]]; then
+          _tmp_candidates+=("$p")
+        fi
+      done
+      candidates=("${_tmp_candidates[@]}")
+      unset _tmp_candidates
+    fi
+
+    # sort by version (highest first) if any candidates
+    if [[ ${#candidates[@]} -gt 0 ]]; then
+      ver_key() {
+        local v="$1"
+        v="${v//_/\.}"
+        v="${v//-/.}"
+        # strip non-digit and non-dot characters
+        v="$(printf '%s' "$v" | sed 's/[^0-9.]/./g')"
+        IFS='.' read -ra parts <<< "$v"
+        # support up to 4 components; pad with zeros
+        printf '%08d%08d%08d%08d' "${parts[0]:-0}" "${parts[1]:-0}" "${parts[2]:-0}" "${parts[3]:-0}"
+      }
+
+      mlist=()
+      for p in "${candidates[@]}"; do
+        vname=$(basename "$p")
+        key=$(ver_key "$vname")
+        mlist+=("$key|$vname|$p")
+      done
+
+      IFS=$'\n' sorted=($(printf '%s\n' "${mlist[@]}" | sort -t'|' -k1,1nr))
+      candidates=()
+      for s in "${sorted[@]}"; do
+        # field 3 is the path
+        candidates+=("$(printf '%s' "$s" | cut -d'|' -f3-)")
+      done
+
+      if [[ -t 0 ]]; then
+        echo "Found candidate version folders for '$APP':"
+        i=1
+        for d in "${candidates[@]}"; do
+          vername=$(basename "$d")
+          if [[ "$d" == "$repo_root"* ]]; then
+            disp="${d#$repo_root}"
+            disp="~${disp}"
+          elif [[ "$d" == "$run_root"* ]]; then
+            disp="${d#$run_root}"
+            # show as relative to current dir when different from repo_root
+            disp=".${disp}"
+          else
+            disp="$d"
+          fi
+          echo " [$i] $vername -> $disp"
+          ((i++))
+        done
+        echo " [m] Enter manual path"
+        read -e -rp "Choose number (default 1) or type path (leave blank for default): " choice
+        if [[ -z "$choice" ]]; then
+          sel=1
+        elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#candidates[@]} )); then
+          sel=$choice
+        elif [[ "$choice" = "m" || "$choice" = "M" ]]; then
+          read -e -rp "Enter explicit source path: " input_src
+          if [[ -n "$input_src" ]]; then
+            if [[ "${input_src:0:1}" = "/" ]]; then
+              candidate="$input_src"
+            else
+              candidate="$run_root/$input_src"
+            fi
+            if [[ -d "$candidate" ]]; then
+              SRC_DIR="$candidate"
+              VER=$(basename "$candidate")
+              sel=0
+            else
+              echo "Invalid path provided." >&2
+              exit 2
+            fi
+          else
+            echo "No path entered. Aborting." >&2
+            exit 2
+          fi
+        else
+          # treat non-numeric input as a path or version name
+          if [[ "${choice:0:1}" = "/" || -d "$run_root/$choice" ]]; then
+            if [[ "${choice:0:1}" = "/" ]]; then
+              candidate="$choice"
+            else
+              candidate="$run_root/$choice"
+            fi
+            if [[ -d "$candidate" ]]; then
+              SRC_DIR="$candidate"
+              VER=$(basename "$candidate")
+              sel=0
+            fi
+          else
+            # look for a candidate with this version basename
+            idx=0
+            for d in "${candidates[@]}"; do
+              ((idx++))
+              if [[ "$(basename "$d")" = "$choice" ]]; then
+                sel=$idx
+                break
+              fi
+            done
+          fi
+        fi
+
+        if [[ -n "${sel:-}" && "$sel" != 0 ]]; then
+          SRC_DIR="${candidates[$((sel-1))]}"
+          VER=$(basename "$SRC_DIR")
+        fi
+      else
+        # non-interactive fallback: pick most recent
+        SRC_DIR="${candidates[0]}"
+        VER=$(basename "$SRC_DIR")
+      fi
+    else
+      # no candidates found, fall back to simple prompt
+      read -e -rp "Version (e.g. 2.1): " VER
+    fi
   fi
 else
   if [[ -z "$APP" || -z "$VER" ]]; then usage; fi
@@ -60,8 +269,8 @@ else
   candidates=(
     "$run_root/$APP/$VER"
     "$run_root/$APP"
-    "$run_root/mac/$APP/$VER"
-    "$repo_root/mac/$APP/$VER"
+    "$run_root/_mac/$APP/$VER"
+    "$repo_root/_mac/$APP/$VER"
     "$repo_root/$APP/$VER"
   )
   src=""
@@ -112,7 +321,16 @@ if [[ -z "$src" ]]; then
         echo "Multiple candidate version folders found:"
         i=1
         for d in "${ver_dirs[@]}"; do
-          echo " [$i] $d (parent: $(basename "$(dirname "$d")"))"
+          if [[ "$d" == "$repo_root"* ]]; then
+            disp="${d#$repo_root}"
+            disp="~${disp}"
+          elif [[ "$d" == "$run_root"* ]]; then
+            disp="${d#$run_root}"
+            disp=".${disp}"
+          else
+            disp="$d"
+          fi
+          echo " [$i] $disp (parent: $(basename "$(dirname "$d")"))"
           ((i++))
         done
         read -e -rp "Choose number or enter a path (leave blank to abort): " choice
@@ -162,10 +380,41 @@ outdir="${OUT_DIR:-$repo_root/dist}"
 mkdir -p "$outdir"
 outfile="$outdir/${APP}-${VER}.zip"
 
-(
-  cd "$src"
-  zip -r -q "$outfile" . -x "*.DS_Store" "local_mnt/*" "*/local_mnt/*"
-)
+create_zip_with_spinner() {
+  local srcdir="$1" out="$2"
 
-echo "Created: $outfile"
+  (cd "$srcdir" && zip -r -q "$out" . -x "*.DS_Store" "local_mnt/*" "*/local_mnt/*") &
+  zip_pid=$!
+
+  spinner() {
+    local pid=$1
+    local delay=0.12
+    local spinstr='|/-\\'
+    while kill -0 "$pid" 2>/dev/null; do
+      for ((i=0;i<${#spinstr};i++)); do
+        printf '\rCreating: %s %c' "$out" "${spinstr:i:1}"
+        sleep "$delay"
+      done
+    done
+    printf '\r'
+  }
+
+  spinner "$zip_pid" &
+  spin_pid=$!
+
+  wait "$zip_pid"
+  zip_rc=$?
+
+  kill "$spin_pid" 2>/dev/null || true
+  wait "$spin_pid" 2>/dev/null || true
+
+  if [[ $zip_rc -ne 0 ]]; then
+    echo "zip failed with code $zip_rc" >&2
+    exit $zip_rc
+  fi
+
+  echo "Created: $out"
+}
+
+create_zip_with_spinner "$src" "$outfile"
 exit 0
