@@ -181,10 +181,10 @@ file_size_bytes() {
 
 origin_from_base() {
   python3 - "$1" <<'PY'
-  import sys, urllib.parse
-  u=urllib.parse.urlparse(sys.argv[1])
-  print(f"{u.scheme}://{u.netloc}")
-  PY
+import sys, urllib.parse
+u=urllib.parse.urlparse(sys.argv[1])
+print(f"{u.scheme}://{u.netloc}")
+PY
 }
 
 normalize_upload_location() {
@@ -444,8 +444,18 @@ create_version() {
   fi
   
   local os_input os_list
-  vared -p "Supported OS (comma-separated, e.g., macOS 14, macOS 13): " os_input
+  vared -p "Supported OS (comma-separated, e.g., macOS Sequoia, macOS Sonoma): " os_input
   os_list="$(print -r -- "$os_input" | python3 -c "import sys,json; print(json.dumps([x.strip() for x in sys.stdin.read().split(',') if x.strip()]))")"
+
+  # Determine install_type based on platform
+  local install_type
+  if [[ "$file_name" == *.zip ]]; then
+    install_type="macOS"
+  elif [[ "$file_name" == *.msi ]]; then
+    install_type="MSI"
+  else
+    install_type="EXE"
+  fi
 
   local payload
   payload="$(jq -nc \
@@ -454,13 +464,16 @@ create_version() {
     --arg date "$RELEASE_DATE" \
     --arg up "$upload_platform" \
     --arg fn "$file_name" \
+    --arg itype "$install_type" \
     --argjson os "$os_list" \
     '{
       version:$ver,
       app_name_match:$match,
       release_date:$date,
       os:$os,
-      file_name: {($up): {name:$fn}}
+      install_type:$itype,
+      status:"Published",
+      file_name: {($up): {name:$fn, type:"cloud"}}
     }')"
 
   api_json POST "/software-repository/${org_id}/${pkg_id}/versions" "$payload"
