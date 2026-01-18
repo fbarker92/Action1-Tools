@@ -181,10 +181,10 @@ file_size_bytes() {
 
 origin_from_base() {
   python3 - "$1" <<'PY'
-import sys, urllib.parse
-u=urllib.parse.urlparse(sys.argv[1])
-print(f"{u.scheme}://{u.netloc}")
-PY
+  import sys, urllib.parse
+  u=urllib.parse.urlparse(sys.argv[1])
+  print(f"{u.scheme}://{u.netloc}")
+  PY
 }
 
 normalize_upload_location() {
@@ -756,5 +756,3 @@ log INFO "Successfully deployed to Action1!"
 log INFO "Organization: $ORG_NAME"
 log INFO "Repository: $REPO_ID"
 log INFO "Version: $VERSION_NUM"
-
-https://app.eu.action1.com/console/packages/insidegui_Virtual_Buddy_1766255911229/2.1_1766255928442?tab=0&org=0bf6a280-66d7-11f0-a995-2dcd026e2646
