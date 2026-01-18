@@ -482,6 +482,85 @@ select_or_create_repo() {
 }
 
 #############################################
+# GitHub Release Scraping
+#############################################
+scrape_github_release() {
+  local github_url="$1"
+  
+  log INFO "Scraping GitHub release information..."
+  
+  # Extract owner/repo from URL
+  local owner repo
+  if [[ "$github_url" =~ github\.com/([^/]+)/([^/]+) ]]; then
+    owner="${match[1]}"
+    repo="${match[2]}"
+  else
+    log ERROR "Invalid GitHub URL format"
+    return 1
+  fi
+  
+  # Determine if this is a specific release or latest
+  local api_url
+  if [[ "$github_url" =~ /releases/tag/([^/]+) ]]; then
+    local tag="${match[1]}"
+    api_url="https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}"
+    log DEBUG "Fetching specific release: $tag"
+  elif [[ "$github_url" =~ /releases/download/([^/]+) ]]; then
+    local tag="${match[1]}"
+    api_url="https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}"
+    log DEBUG "Fetching release from download URL: $tag"
+  else
+    api_url="https://api.github.com/repos/${owner}/${repo}/releases/latest"
+    log DEBUG "Fetching latest release"
+  fi
+  
+  # Fetch release data from GitHub API
+  local response http_code
+  http_code="$(curl -sS -w "%{http_code}" -o /tmp/gh_release.json "$api_url" 2>/dev/null)"
+  
+  if [[ "$http_code" != "200" ]]; then
+    log ERROR "Failed to fetch GitHub release (HTTP $http_code)"
+    rm -f /tmp/gh_release.json
+    return 1
+  fi
+  
+  # Parse release data
+  local version_num release_date release_notes download_url
+  version_num="$(jq -r '.tag_name // .name // ""' /tmp/gh_release.json | sed 's/^v//')"
+  release_date="$(jq -r '.published_at // ""' /tmp/gh_release.json | cut -d'T' -f1)"
+  release_notes="$(jq -r '.body // ""' /tmp/gh_release.json)"
+  
+  # Find download URL matching the file pattern if provided
+  if [[ -n "${FILE_BASENAME:-}" ]]; then
+    download_url="$(jq -r --arg name "$FILE_BASENAME" '.assets[] | select(.name == $name) | .browser_download_url' /tmp/gh_release.json)"
+  fi
+  
+  if [[ -z "$download_url" ]]; then
+    # Try to find first matching asset by extension
+    if [[ "${FILE_BASENAME:-}" == *.zip ]]; then
+      download_url="$(jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' /tmp/gh_release.json | head -n1)"
+    elif [[ "${FILE_BASENAME:-}" == *.dmg ]]; then
+      download_url="$(jq -r '.assets[] | select(.name | endswith(".dmg")) | .browser_download_url' /tmp/gh_release.json | head -n1)"
+    fi
+  fi
+  
+  rm -f /tmp/gh_release.json
+  
+  # Export values for use in create_version
+  typeset -g GH_VERSION="$version_num"
+  typeset -g GH_RELEASE_DATE="$release_date"
+  typeset -g GH_RELEASE_NOTES="$release_notes"
+  typeset -g GH_DOWNLOAD_URL="$download_url"
+  
+  log INFO "Scraped GitHub release:"
+  log INFO "  Version: $version_num"
+  log INFO "  Release Date: $release_date"
+  [[ -n "$download_url" ]] && log INFO "  Download URL: $download_url"
+  
+  return 0
+}
+
+#############################################
 # Version Management (UPDATED)
 #############################################
 list_versions() {
@@ -512,6 +591,25 @@ create_version() {
   
   print -r -- "" >&2
   log INFO "Creating new version..."
+  
+  # Optional: Scrape from GitHub
+  print -r -- "" >&2
+  print -r -- "Would you like to auto-populate version info from a GitHub release?" >&2
+  local github_url="${GITHUB_URL:-}"
+  if [[ -z "$github_url" ]]; then
+    vared -p "GitHub release URL (optional, press Enter to skip): " github_url
+    github_url="$(trim "${github_url:-}")"
+  else
+    log INFO "Using GitHub URL from command line: $github_url"
+  fi
+  
+  if [[ -n "$github_url" ]]; then
+    if scrape_github_release "$github_url"; then
+      log INFO "Successfully scraped GitHub release information"
+    else
+      log WARN "Failed to scrape GitHub - continuing with manual entry"
+    fi
+  fi
   
   # Check if there are existing versions to clone from (only for existing repos)
   local clone_from_existing="no"
@@ -629,6 +727,8 @@ create_version() {
     local old_version
     old_version="$(print -r -- "$clone_data" | jq -r '.version')"
     prompt_required VERSION_NUM "Version number" "$old_version"
+  elif [[ -n "${GH_VERSION:-}" ]]; then
+    prompt_required VERSION_NUM "Version number" "$GH_VERSION"
   else
     prompt_required VERSION_NUM "Version number"
   fi
@@ -642,7 +742,11 @@ create_version() {
   fi
   
   local release_date
-  release_date="$(date +%F)"
+  if [[ -n "${GH_RELEASE_DATE:-}" ]]; then
+    release_date="$GH_RELEASE_DATE"
+  else
+    release_date="$(date +%F)"
+  fi
   prompt_required RELEASE_DATE "Release date (YYYY-MM-DD)" "$release_date"
   
   # Determine platform and install_type based on file extension
@@ -731,6 +835,20 @@ create_version() {
     print -r -- "" >&2
     vared -p "New release notes (optional, leave empty to clear): " notes
     notes="$(trim "${notes:-}")"
+  elif [[ -n "${GH_RELEASE_NOTES:-}" ]]; then
+    print -r -- "" >&2
+    print -r -- "Release notes from GitHub:" >&2
+    print -r -- "$GH_RELEASE_NOTES" >&2
+    print -r -- "" >&2
+    local use_gh_notes
+    vared -p "Use these release notes? (y/n) [y]: " use_gh_notes
+    use_gh_notes="$(trim "${use_gh_notes:-y}")"
+    if [[ "${use_gh_notes:l}" == "y" || "${use_gh_notes:l}" == "yes" ]]; then
+      notes="$GH_RELEASE_NOTES"
+    else
+      vared -p "Release notes (optional): " notes
+      notes="$(trim "${notes:-}")"
+    fi
   else
     vared -p "Release notes (optional): " notes
     notes="$(trim "${notes:-}")"
@@ -1007,6 +1125,7 @@ PYEND
 #############################################
 ENV_FILE=".env"
 FILE_PATH=""
+GITHUB_URL=""
 typeset -g CHUNK_MB="${CHUNK_MB:-24}"
 
 usage() {
@@ -1017,6 +1136,7 @@ Usage:
 Options:
   --env FILE              Environment file (default: .env)
   --file-path FILE        Path to installation file (required)
+  --github-url URL        GitHub release URL to scrape version info from
   --log-level LEVEL       Log level: SILENT|INFO|DEBUG|TRACE (default: SILENT)
   --chunk-mb N            Upload chunk size in MB (default: 24, min: 5)
   -h, --help              Show this help
@@ -1026,6 +1146,16 @@ Environment Variables:
   ACTION1_CLIENT_SECRET   API Client Secret
   ACTION1_REGION          Region (Europe, NorthAmerica, Australia)
   ACTION1_BASE_URL        Custom API base URL
+
+Examples:
+  # Basic upload
+  $0 --file-path ./app-1.0.0.zip
+
+  # With GitHub release info auto-populated
+  $0 --file-path ./app-1.0.0.zip --github-url https://github.com/owner/repo/releases/tag/v1.0.0
+
+  # With debug logging
+  $0 --file-path ./app-1.0.0.zip --log-level DEBUG
 EOF
 }
 
@@ -1033,6 +1163,7 @@ while (( $# )); do
   case "$1" in
     --env) ENV_FILE="$2"; shift 2 ;;
     --file-path) FILE_PATH="$2"; shift 2 ;;
+    --github-url) GITHUB_URL="$2"; shift 2 ;;
     --log-level) LOG_LEVEL="$2"; shift 2 ;;
     --chunk-mb) CHUNK_MB="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
