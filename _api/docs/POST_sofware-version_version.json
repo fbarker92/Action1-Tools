@@ -1,0 +1,983 @@
+Collapse all(object | object)
+One ofCollapse all(object | object)
+#0 Windows version POST payloadCollapse allobject
+versionCollapse allstring
+Specify the exact version number as shown in Apps & Features when installed. Format - Major.Minor[.Build[.Revision]]
+Example"244.178.44.111"
+app_name_matchCollapse allstring
+Regular expression to identify a specific version of already installed software.
+Example"^(Mozilla +Firefox).+$"
+notesCollapse allstring
+Additional notes about version.
+Example"Notes about the version here."
+release_dateCollapse allstring
+The date when the software version was released in format YYYY-MM-DD.
+Example"2020-01-01"
+update_typeCollapse allstring
+The update type field will be used by the update automation to determine which updates to install and when.
+EnumCollapse allarray
+#0"Regular Updates"
+#1"Critical - Non-Security"
+#2"Definition Updates"
+#3"Feature Updates"
+#4"Security Updates"
+#5"Service Packs"
+#6"Tools"
+#7"Update Rollups"
+#8"Drivers"
+#9"Upgrades"
+#10"Unknown"
+security_severityCollapse allstring
+For Security Updates only.
+EnumCollapse allarray
+#0"Critical"
+#1"Important"
+#2"Moderate"
+#3"Low"
+#4"Unspecified"
+security_CVECollapse allstring
+For Security Updates only, CVE ID, if available.
+Example"CVE-2014-9165, CVE-2024-30293"
+EULA_textCollapse allstring
+The text of the EULA agreement.
+Example"EULA agreement text here."
+EULA_acceptedCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+approval_statusCollapse allstring
+The approval status of the update.
+EnumCollapse allarray
+#0"New"
+#1"Approved"
+#2"Declined"
+scoped_approvalsCollapse allarray<(object | object)>
+ItemsCollapse all(object | object)
+Any ofCollapse all(object | object)
+#0 Enterprise Approval statusCollapse allobject
+typeCollapse allstring
+EnumCollapse allarray
+#0"Organization"
+#1"Enterprise"
+Const"Enterprise"
+statusCollapse allstring
+The approval status of the update.
+EnumCollapse allarray
+#0"New"
+#1"Approved"
+#2"Declined"
+#1 Organization Approval statusCollapse allobject
+typeCollapse allstring
+EnumCollapse allarray
+#0"Organization"
+#1"Enterprise"
+Const"Organization"
+statusCollapse allstring
+The approval status of the update.
+EnumCollapse allarray
+#0"New"
+#1"Approved"
+#2"Declined"
+organization_idCollapse allstring
+The ID of the organization where the update holds this status.
+Example"00000000-0000-0000-0000-000000000000"
+silent_install_switchesCollapse allstring
+The command line parameters that suppress all setup UI prompts to ensure the installation completes without any user interaction. For example, /quiet, /silent, /s, or /q.
+Example"\\Animate\\Build\\setup.exe --silent\\"
+success_exit_codesCollapse allstring
+Exit code
+Example"0,3010"
+minimum_required_agent_versionCollapse allstring
+Minimum required agent version
+Example"5.184.584.1"
+additional_actionsCollapse allarray<object | (object | object | object)>
+ItemsCollapse allobject | (object | object | object)
+priorityCollapse allstring
+The priority of the action. The higher the number the higher the priority. The default value is 1.
+Example"1"
+whenCollapse allstring
+The action will be triggered - before_install|after_install|before_uninstall|after_uninstall|disable_updates
+EnumCollapse allarray
+#0"before_install"
+#1"after_install"
+#2"before_uninstall"
+#3"after_uninstall"
+#4"disable_updates"
+Example"before_install"
+Any ofCollapse all(object | object | object)
+#0 Deploy UpdateCollapse allobject
+template_idCollapse allstring
+Const"deploy_update"
+nameCollapse allstring
+Example"Deploy updates"
+paramsCollapse all(object | object | object)
+One ofCollapse all(object | object | object)
+#0 Deploy Update (by filters)Collapse allobject
+Deploy updates that correspond to the configured filters.
+display_summaryCollapse allstring
+Action display name.
+reboot_optionsCollapse allobject | (object | object)
+One ofCollapse all(object | object)
+#0 Collapse allobject
+auto_rebootCollapse allstring
+Const"no"
+#1 Collapse allobject
+auto_rebootCollapse allstring
+Const"yes"
+show_messageCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+message_textCollapse allstring
+Reboot message text.
+Example"Your computer requires maintenance and will be rebooted. Please save all work and reboot now to avoid losing any data."
+timeoutCollapse allnumber
+Timeout (in minutes) after which the endpoint will be rebooted
+excluded_updatesCollapse allarray<object>
+List of excluded updates.
+ItemsCollapse allobject≥ 1 items
+Array with objects where key is update id and value is update version
+^.*$Collapse allstring
+Update version
+Example"2.45.2"
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+automatic_approve_updatesCollapse allstring
+If set to "yes", the matched updates will be automatically approved.
+This only takes effect if the require_update_approval parameter is set to "no"
+Only an Enterprise Admin can enable the automatic approval option.
+EnumCollapse allarray
+#0"yes"
+#1"no"
+Default"no"
+automatic_install_delay_daysCollapse allnumber
+Defines the number of days after an update's release during which it will not be installed.
+This only takes effect if the require_update_approval parameter is set to "no"
+require_update_approvalCollapse allstring
+"no" - the automation will install all updates regardless of their approval status.
+"yes" - the automation will only install the updates that have been manually approved.
+EnumCollapse allarray
+#0"yes"
+#1"no"
+Default"yes"
+scopeCollapse allstring
+Const"MatchingFilters"
+filtersCollapse allarray<object | (object | object | object | object)>
+ItemsCollapse allobject | (object | object | object | object)
+operatorCollapse allstring
+EnumCollapse allarray
+#0"include"
+#1"exclude"
+One ofCollapse all(object | object | object | object)
+#0 Collapse allobject
+nameCollapse allstring
+Const"update_sources"
+valuesCollapse allarray<string>≥ 1 items
+ItemsCollapse allstring
+EnumCollapse allarray
+#0"Windows - Optional"
+#1"Windows - Mandatory"
+#2"Applications"
+#1 Collapse allobject
+nameCollapse allstring
+Const"update_types"
+valuesCollapse allarray<string>≥ 1 items
+ItemsCollapse allstring
+EnumCollapse allarray
+#0"Regular Updates"
+#1"Critical - Non-Security"
+#2"Definition Updates"
+#3"Feature Updates"
+#4"Security Updates"
+#5"Service Packs"
+#6"Tools"
+#7"Update Rollups"
+#8"Drivers"
+#9"Upgrades"
+#10"Unknown"
+#2 Collapse allobject
+nameCollapse allstring
+Const"update_security_severities"
+valuesCollapse allarray<string>≥ 1 items
+ItemsCollapse allstring
+The severity of the vulnerability.
+EnumCollapse allarray
+#0"Critical"
+#1"Important"
+#2"Moderate"
+#3"Low"
+#4"Unspecified"
+#3 Collapse allobject
+nameCollapse allstring
+EnumCollapse allarray
+#0"update_names"
+#1"update_vendors"
+valuesCollapse allarray<string>
+ItemsCollapse allstring
+Wildcard to match with update name or vendor
+Example"*Google*"
+#1 Deploy Update (specified updates)Collapse allobject
+Deploy specified updates
+display_summaryCollapse allstring
+Action display name.
+reboot_optionsCollapse allobject | (object | object)
+One ofCollapse all(object | object)
+#0 Collapse allobject
+auto_rebootCollapse allstring
+Const"no"
+#1 Collapse allobject
+auto_rebootCollapse allstring
+Const"yes"
+show_messageCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+message_textCollapse allstring
+Reboot message text.
+Example"Your computer requires maintenance and will be rebooted. Please save all work and reboot now to avoid losing any data."
+timeoutCollapse allnumber
+Timeout (in minutes) after which the endpoint will be rebooted
+excluded_updatesCollapse allarray<object>
+List of excluded updates.
+ItemsCollapse allobject≥ 1 items
+Array with objects where key is update id and value is update version
+^.*$Collapse allstring
+Update version
+Example"2.45.2"
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+scopeCollapse allstring
+Const"Specified"
+packagesCollapse allarray<object>
+ItemsCollapse allobject≥ 1 items
+Array with objects where key is package id and value is newly package version
+^.*$Collapse allstring
+Update version to be deployed
+Example"2.45.2"
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+#2 Deploy Update (all)Collapse allobject
+Deploy All updates
+reboot_optionsCollapse allobject | (object | object)
+One ofCollapse all(object | object)
+#0 Collapse allobject
+auto_rebootCollapse allstring
+Const"no"
+#1 Collapse allobject
+auto_rebootCollapse allstring
+Const"yes"
+show_messageCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+message_textCollapse allstring
+Reboot message text.
+Example"Your computer requires maintenance and will be rebooted. Please save all work and reboot now to avoid losing any data."
+timeoutCollapse allnumber
+Timeout (in minutes) after which the endpoint will be rebooted
+excluded_updatesCollapse allarray<object>
+List of excluded updates.
+ItemsCollapse allobject≥ 1 items
+Array with objects where key is update id and value is update version
+^.*$Collapse allstring
+Update version
+Example"2.45.2"
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+automatic_approve_updatesCollapse allstring
+If set to "yes", the matched updates will be automatically approved.
+This only takes effect if the require_update_approval parameter is set to "no"
+Only an Enterprise Admin can enable the automatic approval option.
+EnumCollapse allarray
+#0"yes"
+#1"no"
+Default"no"
+automatic_install_delay_daysCollapse allnumber
+Defines the number of days after an update's release during which it will not be installed.
+This only takes effect if the require_update_approval parameter is set to "no"
+require_update_approvalCollapse allstring
+"no" - the automation will install all updates regardless of their approval status.
+"yes" - the automation will only install the updates that have been manually approved.
+EnumCollapse allarray
+#0"yes"
+#1"no"
+Default"yes"
+display_summaryCollapse allstring
+Action display name.
+Example"Deploy all updates"
+scopeCollapse allstring
+Const"All"
+#1 Deploy PackageCollapse allobject
+template_idCollapse allstring
+Const"deploy_package"
+nameCollapse allstring
+Example"Deploy Google Chrome"
+paramsCollapse allobject
+reboot_optionsCollapse allobject | (object | object)
+One ofCollapse all(object | object)
+#0 Collapse allobject
+auto_rebootCollapse allstring
+Const"no"
+#1 Collapse allobject
+auto_rebootCollapse allstring
+Const"yes"
+show_messageCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+message_textCollapse allstring
+Reboot message text.
+Example"Your computer requires maintenance and will be rebooted. Please save all work and reboot now to avoid losing any data."
+timeoutCollapse allnumber
+Timeout (in minutes) after which the endpoint will be rebooted
+display_summaryCollapse allstring
+Action display name.
+Example"Deploy Google Chrome"
+packagesCollapse allarray<object>≥ 1 items
+ItemsCollapse allobject
+Array with objects where key is package id and value is package version.
+^.*$string
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+#2 Run ScriptCollapse allobject
+template_idCollapse allstring
+Const"run_script"
+nameCollapse allstring
+Example"Run Script from Script Library"
+paramsCollapse all(object | object)
+One ofCollapse all(object | object)
+#0 Run Script (from library)Collapse allobject
+condition_script_textCollapse allstring
+The condition script is executed on the endpoint to check if it is out of compliance. If the condition script exits with one of the NOT MET exit code, the main script is executed in order to bring the endpoint into automation compliance.The condition script is executed on the endpoint to check if it is out of compliance. If the condition script exits with one of the NOT MET exit code, the main script is executed in order to bring the endpoint into automation compliance.
+Example"if ( Test-Path '$env:SystemRoot\\System32\\drivers\\etc\\hosts' -PathType Leaf ) { exit 0 } else { exit 2 }"
+condition_script_languageCollapse allstring
+EnumCollapse allarray
+#0"PowerShell"
+#1"Command"
+#2"Bash"
+reboot_exit_codesCollapse allstring
+Example"0"
+platformCollapse allstring
+EnumCollapse allarray
+#0"Windows"
+#1"Mac"
+#2"Linux"
+run_script_paramsCollapse allarray<object>
+One or more parameters can be defined in the script text.
+In the PowerShell script body, reference parameters using $paramname syntax.
+In the Command script body, reference parameters using %paramname% syntax.
+
+Note: currently, parameters for Bash scripts are not supported.
+ItemsCollapse allobject
+nameCollapse allstring
+Example"HostName"
+typeCollapse allstring
+EnumCollapse allarray
+#0"String"
+#1"Int"
+#2"Float"
+#3"DateTimeString"
+defaultCollapse allstring
+Uses this value, unless a different value is specified.
+Example"example.com"
+run_script_idCollapse allstring
+Example"USB_Storage__Enable__1642542040429"
+#1 Run Script (manual)Collapse allobject
+condition_script_textCollapse allstring
+The condition script is executed on the endpoint to check if it is out of compliance. If the condition script exits with one of the NOT MET exit code, the main script is executed in order to bring the endpoint into automation compliance.The condition script is executed on the endpoint to check if it is out of compliance. If the condition script exits with one of the NOT MET exit code, the main script is executed in order to bring the endpoint into automation compliance.
+Example"if ( Test-Path '$env:SystemRoot\\System32\\drivers\\etc\\hosts' -PathType Leaf ) { exit 0 } else { exit 2 }"
+condition_script_languageCollapse allstring
+EnumCollapse allarray
+#0"PowerShell"
+#1"Command"
+#2"Bash"
+reboot_exit_codesCollapse allstring
+Example"0"
+platformCollapse allstring
+EnumCollapse allarray
+#0"Windows"
+#1"Mac"
+#2"Linux"
+run_script_paramsCollapse allarray<object>
+One or more parameters can be defined in the script text.
+In the PowerShell script body, reference parameters using $paramname syntax.
+In the Command script body, reference parameters using %paramname% syntax.
+
+Note: currently, parameters for Bash scripts are not supported.
+ItemsCollapse allobject
+nameCollapse allstring
+Example"HostName"
+typeCollapse allstring
+EnumCollapse allarray
+#0"String"
+#1"Int"
+#2"Float"
+#3"DateTimeString"
+defaultCollapse allstring
+Uses this value, unless a different value is specified.
+Example"example.com"
+run_script_textCollapse allstring
+Example"Set-Content -Path '$env:SystemRoot\\System32\\drivers\\etc\\hosts' -Value"
+run_script_languageCollapse allstring
+EnumCollapse allarray
+#0"PowerShell"
+#1"Command"
+#2"Bash"
+OSCollapse allarray<string>
+The list of supported OS's.
+ItemsCollapse allstring
+EnumCollapse allarray
+#0"Windows 11 (25H2)"
+#1"Windows 11 (24H2)"
+#2"Windows 11 (23H2)"
+#3"Windows 11 (22H2)"
+#4"Windows 11 (21H2)"
+#5"Windows 11"
+#6"Windows 10 (22H2)"
+#7"Windows 10 (21H2)"
+#8"Windows 10 (21H1)"
+#9"Windows 10 (20H2)"
+#10"Windows 10 (2004)"
+#11"Windows 10 (1909)"
+#12"Windows 10 (1903)"
+#13"Windows 10 (1809)"
+#14"Windows 10 (1803)"
+#15"Windows 10 (1709)"
+#16"Windows 10 (1703)"
+#17"Windows 10 (1607)"
+#18"Windows 10 (1511)"
+#19"Windows 10 (1507)"
+#20"Windows 10"
+#21"Windows 8.1"
+#22"Windows 8"
+#23"Windows 7"
+#24"Windows Vista"
+#25"Windows XP"
+#26"Windows Server 2025"
+#27"Windows Server 2022"
+#28"Windows Server 2019"
+#29"Windows Server 2016"
+#30"Windows Server 2012 R2"
+#31"Windows Server 2012"
+#32"Windows Server 2008 R2"
+#33"Windows Server 2008"
+#34"Windows Server 2003"
+#35"Windows Server"
+uninstall_app_name_matchCollapse allstring
+Regular expression to identify all possible versions of the same software, including language-specific editions and different name variants.
+Example"^(Mozilla +Firefox +[a-z]+).+$"
+file_nameCollapse allobject
+Methods for downloading the installation file.
+Windows_32Collapse all(object | object)
+One ofCollapse all(object | object)
+#0 File Name (unc)Collapse allobject
+nameCollapse allstring
+The UNC path. The file name should end with the correct extension (.exe, .msi, .zip, etc.).
+Example"\\server_name\\shared_folder\\file_name.msi"
+typeCollapse allstring
+The type of uploaded file.
+Const"unc"
+#1 File Name (cloud)Collapse allobject
+nameCollapse allstring
+Installation file name. The file name should end with the correct extension (.exe, .msi, .zip, etc.).
+Example"7z2406-x32.msi"
+typeCollapse allstring
+The type of uploaded file.
+Const"cloud"
+Windows_64Collapse all(object | object)
+One ofCollapse all(object | object)
+#0 File Name (cloud)Collapse allobject
+nameCollapse allstring
+Installation file name. The file name should end with the correct extension (.exe, .msi, .zip, etc.).
+Example"7z2406-x32.msi"
+typeCollapse allstring
+The type of uploaded file.
+Const"cloud"
+#1 File Name (unc)Collapse allobject
+nameCollapse allstring
+The UNC path. The file name should end with the correct extension (.exe, .msi, .zip, etc.).
+Example"\\server_name\\shared_folder\\file_name.msi"
+typeCollapse allstring
+The type of uploaded file.
+Const"unc"
+Windows_ARM64Collapse all(object | object)
+One ofCollapse all(object | object)
+#0 File Name (cloud)Collapse allobject
+nameCollapse allstring
+Installation file name. The file name should end with the correct extension (.exe, .msi, .zip, etc.).
+Example"7z2406-x32.msi"
+typeCollapse allstring
+The type of uploaded file.
+Const"cloud"
+#1 File Name (unc)Collapse allobject
+nameCollapse allstring
+The UNC path. The file name should end with the correct extension (.exe, .msi, .zip, etc.).
+Example"\\server_name\\shared_folder\\file_name.msi"
+typeCollapse allstring
+The type of uploaded file.
+Const"unc"
+install_typeCollapse allstring
+The type of installation file
+EnumCollapse allarray
+#0"msi"
+#1"exe"
+#2"msix"
+silent_uninstall_switchesCollapse allstring
+The command line parameters that suppress all setup UI prompts to ensure the uninstallation completes without any user interaction.
+Example"/S /quiet /norestart"
+reboot_exit_codesCollapse allstring
+Reboot exit code
+Example"1641,3010"
+allow_x86_x64_on_armCollapse allstring
+If 'file_name.Windows_ARM64' not provided and 'x86_arm_fallback' are set to 'yes', the 'file_name.Windows_64' or 'file_name.Windows_32' installer will be used instead if available.
+EnumCollapse allarray
+#0"no"
+#1"yes"
+#1 Mac version POST payloadCollapse allobject
+versionCollapse allstring
+Specify the exact version number as shown in Apps & Features when installed. Format - Major.Minor[.Build[.Revision]]
+Example"244.178.44.111"
+app_name_matchCollapse allstring
+Regular expression to identify a specific version of already installed software.
+Example"^(Mozilla +Firefox).+$"
+notesCollapse allstring
+Additional notes about version.
+Example"Notes about the version here."
+release_dateCollapse allstring
+The date when the software version was released in format YYYY-MM-DD.
+Example"2020-01-01"
+update_typeCollapse allstring
+The update type field will be used by the update automation to determine which updates to install and when.
+EnumCollapse allarray
+#0"Regular Updates"
+#1"Critical - Non-Security"
+#2"Definition Updates"
+#3"Feature Updates"
+#4"Security Updates"
+#5"Service Packs"
+#6"Tools"
+#7"Update Rollups"
+#8"Drivers"
+#9"Upgrades"
+#10"Unknown"
+security_severityCollapse allstring
+For Security Updates only.
+EnumCollapse allarray
+#0"Critical"
+#1"Important"
+#2"Moderate"
+#3"Low"
+#4"Unspecified"
+security_CVECollapse allstring
+For Security Updates only, CVE ID, if available.
+Example"CVE-2014-9165, CVE-2024-30293"
+EULA_textCollapse allstring
+The text of the EULA agreement.
+Example"EULA agreement text here."
+EULA_acceptedCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+approval_statusCollapse allstring
+The approval status of the update.
+EnumCollapse allarray
+#0"New"
+#1"Approved"
+#2"Declined"
+scoped_approvalsCollapse allarray<(object | object)>
+ItemsCollapse all(object | object)
+Any ofCollapse all(object | object)
+#0 Enterprise Approval statusCollapse allobject
+typeCollapse allstring
+EnumCollapse allarray
+#0"Organization"
+#1"Enterprise"
+Const"Enterprise"
+statusCollapse allstring
+The approval status of the update.
+EnumCollapse allarray
+#0"New"
+#1"Approved"
+#2"Declined"
+#1 Organization Approval statusCollapse allobject
+typeCollapse allstring
+EnumCollapse allarray
+#0"Organization"
+#1"Enterprise"
+Const"Organization"
+statusCollapse allstring
+The approval status of the update.
+EnumCollapse allarray
+#0"New"
+#1"Approved"
+#2"Declined"
+organization_idCollapse allstring
+The ID of the organization where the update holds this status.
+Example"00000000-0000-0000-0000-000000000000"
+silent_install_switchesCollapse allstring
+The command line parameters that suppress all setup UI prompts to ensure the installation completes without any user interaction. For example, /quiet, /silent, /s, or /q.
+Example"\\Animate\\Build\\setup.exe --silent\\"
+success_exit_codesCollapse allstring
+Exit code
+Example"0,3010"
+minimum_required_agent_versionCollapse allstring
+Minimum required agent version
+Example"5.184.584.1"
+additional_actionsCollapse allarray<object | (object | object | object)>
+ItemsCollapse allobject | (object | object | object)
+priorityCollapse allstring
+The priority of the action. The higher the number the higher the priority. The default value is 1.
+Example"1"
+whenCollapse allstring
+The action will be triggered - before_install|after_install|before_uninstall|after_uninstall|disable_updates
+EnumCollapse allarray
+#0"before_install"
+#1"after_install"
+#2"before_uninstall"
+#3"after_uninstall"
+#4"disable_updates"
+Example"before_install"
+Any ofCollapse all(object | object | object)
+#0 Deploy UpdateCollapse allobject
+template_idCollapse allstring
+Const"deploy_update"
+nameCollapse allstring
+Example"Deploy updates"
+paramsCollapse all(object | object | object)
+One ofCollapse all(object | object | object)
+#0 Deploy Update (by filters)Collapse allobject
+Deploy updates that correspond to the configured filters.
+display_summaryCollapse allstring
+Action display name.
+reboot_optionsCollapse allobject | (object | object)
+One ofCollapse all(object | object)
+#0 Collapse allobject
+auto_rebootCollapse allstring
+Const"no"
+#1 Collapse allobject
+auto_rebootCollapse allstring
+Const"yes"
+show_messageCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+message_textCollapse allstring
+Reboot message text.
+Example"Your computer requires maintenance and will be rebooted. Please save all work and reboot now to avoid losing any data."
+timeoutCollapse allnumber
+Timeout (in minutes) after which the endpoint will be rebooted
+excluded_updatesCollapse allarray<object>
+List of excluded updates.
+ItemsCollapse allobject≥ 1 items
+Array with objects where key is update id and value is update version
+^.*$Collapse allstring
+Update version
+Example"2.45.2"
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+automatic_approve_updatesCollapse allstring
+If set to "yes", the matched updates will be automatically approved.
+This only takes effect if the require_update_approval parameter is set to "no"
+Only an Enterprise Admin can enable the automatic approval option.
+EnumCollapse allarray
+#0"yes"
+#1"no"
+Default"no"
+automatic_install_delay_daysCollapse allnumber
+Defines the number of days after an update's release during which it will not be installed.
+This only takes effect if the require_update_approval parameter is set to "no"
+require_update_approvalCollapse allstring
+"no" - the automation will install all updates regardless of their approval status.
+"yes" - the automation will only install the updates that have been manually approved.
+EnumCollapse allarray
+#0"yes"
+#1"no"
+Default"yes"
+scopeCollapse allstring
+Const"MatchingFilters"
+filtersCollapse allarray<object | (object | object | object | object)>
+ItemsCollapse allobject | (object | object | object | object)
+operatorCollapse allstring
+EnumCollapse allarray
+#0"include"
+#1"exclude"
+One ofCollapse all(object | object | object | object)
+#0 Collapse allobject
+nameCollapse allstring
+Const"update_sources"
+valuesCollapse allarray<string>≥ 1 items
+ItemsCollapse allstring
+EnumCollapse allarray
+#0"Windows - Optional"
+#1"Windows - Mandatory"
+#2"Applications"
+#1 Collapse allobject
+nameCollapse allstring
+Const"update_types"
+valuesCollapse allarray<string>≥ 1 items
+ItemsCollapse allstring
+EnumCollapse allarray
+#0"Regular Updates"
+#1"Critical - Non-Security"
+#2"Definition Updates"
+#3"Feature Updates"
+#4"Security Updates"
+#5"Service Packs"
+#6"Tools"
+#7"Update Rollups"
+#8"Drivers"
+#9"Upgrades"
+#10"Unknown"
+#2 Collapse allobject
+nameCollapse allstring
+Const"update_security_severities"
+valuesCollapse allarray<string>≥ 1 items
+ItemsCollapse allstring
+The severity of the vulnerability.
+EnumCollapse allarray
+#0"Critical"
+#1"Important"
+#2"Moderate"
+#3"Low"
+#4"Unspecified"
+#3 Collapse allobject
+nameCollapse allstring
+EnumCollapse allarray
+#0"update_names"
+#1"update_vendors"
+valuesCollapse allarray<string>
+ItemsCollapse allstring
+Wildcard to match with update name or vendor
+Example"*Google*"
+#1 Deploy Update (specified updates)Collapse allobject
+Deploy specified updates
+display_summaryCollapse allstring
+Action display name.
+reboot_optionsCollapse allobject | (object | object)
+One ofCollapse all(object | object)
+#0 Collapse allobject
+auto_rebootCollapse allstring
+Const"no"
+#1 Collapse allobject
+auto_rebootCollapse allstring
+Const"yes"
+show_messageCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+message_textCollapse allstring
+Reboot message text.
+Example"Your computer requires maintenance and will be rebooted. Please save all work and reboot now to avoid losing any data."
+timeoutCollapse allnumber
+Timeout (in minutes) after which the endpoint will be rebooted
+excluded_updatesCollapse allarray<object>
+List of excluded updates.
+ItemsCollapse allobject≥ 1 items
+Array with objects where key is update id and value is update version
+^.*$Collapse allstring
+Update version
+Example"2.45.2"
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+scopeCollapse allstring
+Const"Specified"
+packagesCollapse allarray<object>
+ItemsCollapse allobject≥ 1 items
+Array with objects where key is package id and value is newly package version
+^.*$Collapse allstring
+Update version to be deployed
+Example"2.45.2"
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+#2 Deploy Update (all)Collapse allobject
+Deploy All updates
+reboot_optionsCollapse allobject | (object | object)
+One ofCollapse all(object | object)
+#0 Collapse allobject
+auto_rebootCollapse allstring
+Const"no"
+#1 Collapse allobject
+auto_rebootCollapse allstring
+Const"yes"
+show_messageCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+message_textCollapse allstring
+Reboot message text.
+Example"Your computer requires maintenance and will be rebooted. Please save all work and reboot now to avoid losing any data."
+timeoutCollapse allnumber
+Timeout (in minutes) after which the endpoint will be rebooted
+excluded_updatesCollapse allarray<object>
+List of excluded updates.
+ItemsCollapse allobject≥ 1 items
+Array with objects where key is update id and value is update version
+^.*$Collapse allstring
+Update version
+Example"2.45.2"
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+automatic_approve_updatesCollapse allstring
+If set to "yes", the matched updates will be automatically approved.
+This only takes effect if the require_update_approval parameter is set to "no"
+Only an Enterprise Admin can enable the automatic approval option.
+EnumCollapse allarray
+#0"yes"
+#1"no"
+Default"no"
+automatic_install_delay_daysCollapse allnumber
+Defines the number of days after an update's release during which it will not be installed.
+This only takes effect if the require_update_approval parameter is set to "no"
+require_update_approvalCollapse allstring
+"no" - the automation will install all updates regardless of their approval status.
+"yes" - the automation will only install the updates that have been manually approved.
+EnumCollapse allarray
+#0"yes"
+#1"no"
+Default"yes"
+display_summaryCollapse allstring
+Action display name.
+Example"Deploy all updates"
+scopeCollapse allstring
+Const"All"
+#1 Deploy PackageCollapse allobject
+template_idCollapse allstring
+Const"deploy_package"
+nameCollapse allstring
+Example"Deploy Google Chrome"
+paramsCollapse allobject
+reboot_optionsCollapse allobject | (object | object)
+One ofCollapse all(object | object)
+#0 Collapse allobject
+auto_rebootCollapse allstring
+Const"no"
+#1 Collapse allobject
+auto_rebootCollapse allstring
+Const"yes"
+show_messageCollapse allstring
+EnumCollapse allarray
+#0"yes"
+#1"no"
+message_textCollapse allstring
+Reboot message text.
+Example"Your computer requires maintenance and will be rebooted. Please save all work and reboot now to avoid losing any data."
+timeoutCollapse allnumber
+Timeout (in minutes) after which the endpoint will be rebooted
+display_summaryCollapse allstring
+Action display name.
+Example"Deploy Google Chrome"
+packagesCollapse allarray<object>≥ 1 items
+ItemsCollapse allobject
+Array with objects where key is package id and value is package version.
+^.*$string
+ExampleCollapse allobject
+Google_Google_Chrome_1570243626751_builtin"126.0.6478.115"
+#2 Run ScriptCollapse allobject
+template_idCollapse allstring
+Const"run_script"
+nameCollapse allstring
+Example"Run Script from Script Library"
+paramsCollapse all(object | object)
+One ofCollapse all(object | object)
+#0 Run Script (from library)Collapse allobject
+condition_script_textCollapse allstring
+The condition script is executed on the endpoint to check if it is out of compliance. If the condition script exits with one of the NOT MET exit code, the main script is executed in order to bring the endpoint into automation compliance.The condition script is executed on the endpoint to check if it is out of compliance. If the condition script exits with one of the NOT MET exit code, the main script is executed in order to bring the endpoint into automation compliance.
+Example"if ( Test-Path '$env:SystemRoot\\System32\\drivers\\etc\\hosts' -PathType Leaf ) { exit 0 } else { exit 2 }"
+condition_script_languageCollapse allstring
+EnumCollapse allarray
+#0"PowerShell"
+#1"Command"
+#2"Bash"
+reboot_exit_codesCollapse allstring
+Example"0"
+platformCollapse allstring
+EnumCollapse allarray
+#0"Windows"
+#1"Mac"
+#2"Linux"
+run_script_paramsCollapse allarray<object>
+One or more parameters can be defined in the script text.
+In the PowerShell script body, reference parameters using $paramname syntax.
+In the Command script body, reference parameters using %paramname% syntax.
+
+Note: currently, parameters for Bash scripts are not supported.
+ItemsCollapse allobject
+nameCollapse allstring
+Example"HostName"
+typeCollapse allstring
+EnumCollapse allarray
+#0"String"
+#1"Int"
+#2"Float"
+#3"DateTimeString"
+defaultCollapse allstring
+Uses this value, unless a different value is specified.
+Example"example.com"
+run_script_idCollapse allstring
+Example"USB_Storage__Enable__1642542040429"
+#1 Run Script (manual)Collapse allobject
+condition_script_textCollapse allstring
+The condition script is executed on the endpoint to check if it is out of compliance. If the condition script exits with one of the NOT MET exit code, the main script is executed in order to bring the endpoint into automation compliance.The condition script is executed on the endpoint to check if it is out of compliance. If the condition script exits with one of the NOT MET exit code, the main script is executed in order to bring the endpoint into automation compliance.
+Example"if ( Test-Path '$env:SystemRoot\\System32\\drivers\\etc\\hosts' -PathType Leaf ) { exit 0 } else { exit 2 }"
+condition_script_languageCollapse allstring
+EnumCollapse allarray
+#0"PowerShell"
+#1"Command"
+#2"Bash"
+reboot_exit_codesCollapse allstring
+Example"0"
+platformCollapse allstring
+EnumCollapse allarray
+#0"Windows"
+#1"Mac"
+#2"Linux"
+run_script_paramsCollapse allarray<object>
+One or more parameters can be defined in the script text.
+In the PowerShell script body, reference parameters using $paramname syntax.
+In the Command script body, reference parameters using %paramname% syntax.
+
+Note: currently, parameters for Bash scripts are not supported.
+ItemsCollapse allobject
+nameCollapse allstring
+Example"HostName"
+typeCollapse allstring
+EnumCollapse allarray
+#0"String"
+#1"Int"
+#2"Float"
+#3"DateTimeString"
+defaultCollapse allstring
+Uses this value, unless a different value is specified.
+Example"example.com"
+run_script_textCollapse allstring
+Example"Set-Content -Path '$env:SystemRoot\\System32\\drivers\\etc\\hosts' -Value"
+run_script_languageCollapse allstring
+EnumCollapse allarray
+#0"PowerShell"
+#1"Command"
+#2"Bash"
+OSCollapse allarray<string>
+The list of supported OS's.
+ItemsCollapse allstring
+EnumCollapse allarray
+#0"macOS Sequoia"
+#1"macOS Sonoma"
+#2"macOS Ventura"
+#3"macOS Monterey"
+#4"macOS"
+file_nameCollapse allobject
+Methods for downloading the installation file.
+Mac_IntelCPUCollapse allobject
+typeCollapse allstring
+The type of uploaded file.
+Const"cloud"
+nameCollapse allstring
+Installation file name. Currently, for package versions created for macOS only files with the '.zip' extension are supported.
+Example"7z2406.zip"
+Mac_AppleSiliconCollapse allobject
+typeCollapse allstring
+The type of uploaded file.
+Const"cloud"
+nameCollapse allstring
+Installation file name. Currently, for package versions created for macOS only files with the '.zip' extension are supported.
+Example"7z2406.zip"
