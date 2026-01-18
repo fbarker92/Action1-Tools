@@ -445,6 +445,7 @@ select_or_create_repo() {
   if (( count == 0 )); then
     log WARN "No custom repositories found."
     REPO_ID="$(create_repo "$org_id")"
+    REPO_IS_NEW="yes"
     return 0
   fi
   
@@ -466,6 +467,7 @@ select_or_create_repo() {
     
     if (( sel == count+1 )); then
       REPO_ID="$(create_repo "$org_id")"
+      REPO_IS_NEW="yes"
       return 0
     else
       REPO_ID="$(print -r -- "$REQ_BODY" | jq -r --arg idx "$sel" '.items[($idx|tonumber)-1].id')"
@@ -473,6 +475,7 @@ select_or_create_repo() {
       local repo_name
       repo_name="$(print -r -- "$REQ_BODY" | jq -r --arg idx "$sel" '.items[($idx|tonumber)-1].name')"
       log INFO "Selected repository: $repo_name (ID: $REPO_ID)"
+      REPO_IS_NEW="no"
       break
     fi
   done
@@ -481,15 +484,162 @@ select_or_create_repo() {
 #############################################
 # Version Management (UPDATED)
 #############################################
+list_versions() {
+  local org_id="$1" pkg_id="$2"
+  log INFO "Fetching existing versions..."
+  log DEBUG "GET /software-repository/${org_id}/${pkg_id}/versions?limit=100"
+  api_json GET "/software-repository/${org_id}/${pkg_id}/versions?limit=100"
+  
+  if [[ "${REQ_CODE:-}" != "200" ]]; then
+    log WARN "Failed to list versions (HTTP ${REQ_CODE:-}). Body: $REQ_BODY"
+    log WARN "Continuing without version cloning option"
+    return 1
+  fi
+  
+  log DEBUG "Versions API response: $REQ_BODY"
+  return 0
+}
+
+get_version_details() {
+  local org_id="$1" pkg_id="$2" ver_id="$3"
+  log INFO "Fetching version details..."
+  api_json GET "/software-repository/${org_id}/${pkg_id}/versions/${ver_id}"
+  [[ "${REQ_CODE:-}" == "200" ]] || die "Failed to get version details (HTTP ${REQ_CODE:-}). Body: $REQ_BODY"
+}
+
 create_version() {
-  local org_id="$1" pkg_id="$2" file_name="$3"
+  local org_id="$1" pkg_id="$2" file_name="$3" is_new_repo="${4:-no}"
   
   print -r -- "" >&2
   log INFO "Creating new version..."
   
+  # Check if there are existing versions to clone from (only for existing repos)
+  local clone_from_existing="no"
+  local clone_source_id=""
+  local clone_data=""
+  local version_count=0
+  
+  if [[ "$is_new_repo" != "yes" ]]; then
+    if list_versions "$org_id" "$pkg_id"; then
+      # Handle different API response formats:
+      # 1. Single version object: {"type": "Version", "version": "1.0", ...}
+      # 2. Items array: {"items": [{"type": "Version", ...}, ...]}
+      # 3. Empty items array: {"items": []}
+      
+      local versions_array
+      local is_single_version
+      is_single_version="$(print -r -- "$REQ_BODY" | jq -r 'if .type == "Version" then "yes" else "no" end')"
+      
+      if [[ "$is_single_version" == "yes" ]]; then
+        # Single version object - wrap it in an array
+        versions_array="$(print -r -- "$REQ_BODY" | jq -c '[.]')"
+        version_count=1
+        log DEBUG "Found 1 existing version in repository (single object response)"
+      else
+        # Check if it has an items array
+        local has_items
+        has_items="$(print -r -- "$REQ_BODY" | jq -r 'if .items then "yes" else "no" end')"
+        
+        if [[ "$has_items" == "yes" ]]; then
+          versions_array="$(print -r -- "$REQ_BODY" | jq -c '.items')"
+          version_count="$(print -r -- "$versions_array" | jq 'length')"
+          log DEBUG "Found $version_count existing version(s) in repository (items array response)"
+        else
+          # Unknown format - assume empty
+          versions_array="[]"
+          version_count=0
+          log WARN "Unexpected API response format - treating as no versions"
+        fi
+      fi
+      
+      if (( version_count > 0 )); then
+        print -r -- "" >&2
+        print -r -- "Found $version_count existing version(s)." >&2
+        print -r -- "Would you like to clone settings from an existing version?" >&2
+        print -r -- "  1) No, create new version from scratch" >&2
+        print -r -- "  2) Yes, clone from existing version" >&2
+        
+        local clone_choice=""
+        while true; do
+          vared -p "Select (1-2): " clone_choice
+          clone_choice="$(trim "$clone_choice")"
+          if [[ "$clone_choice" == "1" ]]; then
+            clone_from_existing="no"
+            break
+          elif [[ "$clone_choice" == "2" ]]; then
+            clone_from_existing="yes"
+            break
+          else
+            print -r -- "Invalid choice. Enter 1 or 2." >&2
+          fi
+        done
+        
+        if [[ "$clone_from_existing" == "yes" ]]; then
+          print -r -- "" >&2
+          print -r -- "Select version to clone from:" >&2
+          local i=1
+          print -r -- "$versions_array" | jq -r '.[] | "\(.version)\t\(.id)\t\(.release_date // "N/A")"' | while IFS=$'\t' read -r ver id date; do
+            print -r -- "  $i) Version $ver (Released: $date)" >&2
+            ((i++))
+          done
+          
+          local ver_sel=""
+          while true; do
+            vared -p "Select version (1-${version_count}): " ver_sel
+            ver_sel="$(trim "$ver_sel")"
+            [[ "$ver_sel" == <-> ]] || { print -r -- "Enter a number." >&2; continue; }
+            (( ver_sel>=1 && ver_sel<=version_count )) || { print -r -- "Out of range." >&2; continue; }
+            
+            clone_source_id="$(print -r -- "$versions_array" | jq -r --arg idx "$ver_sel" '.[($idx|tonumber)-1].id')"
+            [[ -n "$clone_source_id" && "$clone_source_id" != "null" ]] || { print -r -- "Invalid selection." >&2; continue; }
+            break
+          done
+          
+          # Check if we already have full details or need to fetch them
+          local selected_version_data
+          selected_version_data="$(print -r -- "$versions_array" | jq -r --arg idx "$ver_sel" '.[($idx|tonumber)-1]')"
+          
+          # Check if the version data has all the fields we need (e.g., additional_actions)
+          local has_full_details
+          has_full_details="$(print -r -- "$selected_version_data" | jq -r 'if .additional_actions != null then "yes" else "no" end')"
+          
+          if [[ "$has_full_details" == "yes" ]]; then
+            # We already have full details
+            clone_data="$selected_version_data"
+            log INFO "Cloning from version: $(print -r -- "$clone_data" | jq -r '.version')"
+          else
+            # Fetch full version details
+            get_version_details "$org_id" "$pkg_id" "$clone_source_id"
+            clone_data="$REQ_BODY"
+            log INFO "Cloning from version: $(print -r -- "$clone_data" | jq -r '.version')"
+          fi
+        fi
+      else
+        log DEBUG "No existing versions found - creating first version"
+      fi
+    else
+      log DEBUG "Could not fetch versions - creating version from scratch"
+    fi
+  else
+    log INFO "New repository - creating first version from scratch"
+  fi
+  
   # Required fields
-  prompt_required VERSION_NUM "Version number"
-  prompt_required APP_NAME_MATCH "App name match (regex)" "^AppName$"
+  if [[ "$clone_from_existing" == "yes" ]]; then
+    local old_version
+    old_version="$(print -r -- "$clone_data" | jq -r '.version')"
+    prompt_required VERSION_NUM "Version number" "$old_version"
+  else
+    prompt_required VERSION_NUM "Version number"
+  fi
+  
+  # App name match - clone or prompt
+  if [[ "$clone_from_existing" == "yes" ]]; then
+    APP_NAME_MATCH="$(print -r -- "$clone_data" | jq -r '.app_name_match // "^AppName$"')"
+    log INFO "Using app name match from cloned version: $APP_NAME_MATCH"
+  else
+    prompt_required APP_NAME_MATCH "App name match (regex)" "^AppName$"
+  fi
   
   local release_date
   release_date="$(date +%F)"
@@ -514,6 +664,12 @@ create_version() {
   local os_input os_list
   if [[ "$install_type" == "macOS" ]]; then
     local default_os="macOS"
+    if [[ "$clone_from_existing" == "yes" ]]; then
+      local cloned_os
+      cloned_os="$(print -r -- "$clone_data" | jq -r '.os // [] | join(",")')"
+      [[ -n "$cloned_os" ]] && default_os="$cloned_os"
+    fi
+    
     print -r -- "" >&2
     print -r -- "OS Selection Tips:" >&2
     print -r -- "  - Enter 'macOS' for all macOS versions" >&2
@@ -527,17 +683,31 @@ create_version() {
     os_list="$(print -r -- "$parsed_os" | python3 -c "import sys,json; print(json.dumps([x.strip() for x in sys.stdin.read().split(',') if x.strip()]))")"
   else
     local default_os="Windows 11,Windows 10,Windows"
+    if [[ "$clone_from_existing" == "yes" ]]; then
+      local cloned_os
+      cloned_os="$(print -r -- "$clone_data" | jq -r '.os // [] | join(",")')"
+      [[ -n "$cloned_os" ]] && default_os="$cloned_os"
+    fi
     prompt_required os_input "Supported OS (comma-separated)" "$default_os"
     os_list="$(print -r -- "$os_input" | python3 -c "import sys,json; print(json.dumps([x.strip() for x in sys.stdin.read().split(',') if x.strip()]))")"
   fi
 
-  # Exit codes
-  prompt_required SUCCESS_EXIT_CODES "Success exit codes (comma-separated)" "0"
-  prompt_required REBOOT_EXIT_CODES "Reboot exit codes (comma-separated)" "1641,3010"
+  # Exit codes - clone or use defaults
+  if [[ "$clone_from_existing" == "yes" ]]; then
+    SUCCESS_EXIT_CODES="$(print -r -- "$clone_data" | jq -r '.success_exit_codes // "0"')"
+    REBOOT_EXIT_CODES="$(print -r -- "$clone_data" | jq -r '.reboot_exit_codes // "1641,3010"')"
+    log INFO "Using exit codes from cloned version - Success: $SUCCESS_EXIT_CODES, Reboot: $REBOOT_EXIT_CODES"
+  else
+    prompt_required SUCCESS_EXIT_CODES "Success exit codes (comma-separated)" "0"
+    prompt_required REBOOT_EXIT_CODES "Reboot exit codes (comma-separated)" "1641,3010"
+  fi
   
-  # CVEs (optional)
+  # CVEs (optional) - always prompt, clear old ones
   local cve_input cve_list
   print -r -- "" >&2
+  if [[ "$clone_from_existing" == "yes" ]]; then
+    print -r -- "Note: CVEs from cloned version will be cleared unless you specify new ones." >&2
+  fi
   vared -p "CVEs addressed (comma-separated, optional): " cve_input
   cve_input="$(trim "${cve_input:-}")"
   if [[ -n "$cve_input" ]]; then
@@ -548,8 +718,23 @@ create_version() {
   
   # Optional fields
   local notes
-  vared -p "Release notes (optional): " notes
-  notes="$(trim "${notes:-}")"
+  if [[ "$clone_from_existing" == "yes" ]]; then
+    print -r -- "" >&2
+    print -r -- "Previous release notes:" >&2
+    local prev_notes
+    prev_notes="$(print -r -- "$clone_data" | jq -r '.notes // ""')"
+    if [[ -n "$prev_notes" ]]; then
+      print -r -- "$prev_notes" >&2
+    else
+      print -r -- "(none)" >&2
+    fi
+    print -r -- "" >&2
+    vared -p "New release notes (optional, leave empty to clear): " notes
+    notes="$(trim "${notes:-}")"
+  else
+    vared -p "Release notes (optional): " notes
+    notes="$(trim "${notes:-}")"
+  fi
   
   local update_type
   prompt_menu update_type "Update type" "Regular Updates" "Security Updates" "Critical Updates"
@@ -568,6 +753,19 @@ create_version() {
   local eula_accepted
   prompt_menu eula_accepted "EULA acceptance required" "no" "yes"
 
+  # Additional actions - clone if present
+  local additional_actions
+  if [[ "$clone_from_existing" == "yes" ]]; then
+    additional_actions="$(print -r -- "$clone_data" | jq -c '.additional_actions // []')"
+    local action_count
+    action_count="$(print -r -- "$additional_actions" | jq 'length')"
+    if (( action_count > 0 )); then
+      log INFO "Cloning $action_count additional action(s) from previous version"
+    fi
+  else
+    additional_actions="[]"
+  fi
+
   # Build the JSON payload
   local payload
   payload="$(jq -nc \
@@ -579,6 +777,7 @@ create_version() {
     --arg itype "$install_type" \
     --argjson os "$os_list" \
     --argjson cves "$cve_list" \
+    --argjson additional_actions "$additional_actions" \
     --arg success_codes "$SUCCESS_EXIT_CODES" \
     --arg reboot_codes "$REBOOT_EXIT_CODES" \
     --arg notes "$notes" \
@@ -602,7 +801,8 @@ create_version() {
       approval_status: $approval_status,
       EULA_accepted: $eula,
       file_name: {($up): {name: $fn, type: "cloud"}}
-    } + (if ($cves | length) > 0 then {cves: $cves} else {} end)')"
+    } + (if ($cves | length) > 0 then {cves: $cves} else {} end)
+      + (if ($additional_actions | length) > 0 then {additional_actions: $additional_actions} else {} end)')"
 
   api_json POST "/software-repository/${org_id}/${pkg_id}/versions" "$payload"
   [[ "${REQ_CODE:-}" == "200" ]] || die "Version create failed (HTTP ${REQ_CODE:-}). Body: $REQ_BODY"
@@ -886,7 +1086,7 @@ if [[ "$ORG_ID" == "Enterprise" || "$ORG_ID" == "all" ]]; then
   select_or_create_repo "$ACTUAL_ORG_ID"
   
   typeset -g VERSION_ID VERSION_NUM APP_NAME_MATCH RELEASE_DATE
-  VERSION_ID="$(create_version "$ACTUAL_ORG_ID" "$REPO_ID" "$FILE_BASENAME")"
+  VERSION_ID="$(create_version "$ACTUAL_ORG_ID" "$REPO_ID" "$FILE_BASENAME" "${REPO_IS_NEW:-no}")"
   
   check_conflicts "$ACTUAL_ORG_ID" "$REPO_ID" "$VERSION_ID"
   
@@ -913,7 +1113,7 @@ else
   select_or_create_repo "$ORG_ID"
   
   typeset -g VERSION_ID VERSION_NUM APP_NAME_MATCH RELEASE_DATE
-  VERSION_ID="$(create_version "$ORG_ID" "$REPO_ID" "$FILE_BASENAME")"
+  VERSION_ID="$(create_version "$ORG_ID" "$REPO_ID" "$FILE_BASENAME" "${REPO_IS_NEW:-no}")"
   
   check_conflicts "$ORG_ID" "$REPO_ID" "$VERSION_ID"
   
