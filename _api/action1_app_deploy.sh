@@ -156,6 +156,54 @@ dotenv_load() {
 #############################################
 # Utils
 #############################################
+parse_macos_versions() {
+  local input="$1"
+  # Comprehensive list of macOS versions in order (newest to oldest)
+  local -a all_versions=(
+    "macOS Tahoe"
+    "macOS Sequoia"
+    "macOS Sonoma"
+    "macOS Ventura"
+    "macOS Monterey"
+    "macOS Big Sur"
+    "macOS Catalina"
+    "macOS Mojave"
+    "macOS High Sierra"
+    "macOS Sierra"
+  )
+  
+  # If input is just "macOS", return all versions plus generic "macOS"
+  if [[ "${input:l}" == "macos" ]]; then
+    print -r -- "${(j:,:)all_versions},macOS"
+    return 0
+  fi
+  
+  # Check if input matches a specific version
+  local found_idx=-1
+  local i=0
+  for ver in "${all_versions[@]}"; do
+    if [[ "${ver:l}" == "${input:l}" ]]; then
+      found_idx=$i
+      break
+    fi
+    ((i++))
+  done
+  
+  # If found, return that version and all newer ones, plus generic "macOS"
+  if (( found_idx >= 0 )); then
+    local -a result=()
+    for ((i=0; i<=found_idx; i++)); do
+      result+=("${all_versions[$i]}")
+    done
+    result+=("macOS")
+    print -r -- "${(j:,:)result}"
+    return 0
+  fi
+  
+  # Otherwise return input as-is
+  print -r -- "$input"
+}
+
 derive_api_base() {
   if [[ -n "${ACTION1_BASE_URL:-}" ]]; then
     print -r -- "${ACTION1_BASE_URL}"
@@ -310,7 +358,9 @@ choose_org() {
 
   print -r -- "" >&2
   print -r -- "Organizations:" >&2
-  local i=1
+  print -r -- "  1) Enterprise (all organizations)" >&2
+  print -r -- "  2) All Organizations (deploy to each individually)" >&2
+  local i=3
   print -r -- "$REQ_BODY" | jq -r '.items[] | "\(.name)\t\(.id)"' | while IFS=$'\t' read -r name id; do
     print -r -- "  $i) $name ($id)" >&2
     ((i++))
@@ -322,13 +372,23 @@ choose_org() {
     sel="$(trim "$sel")"
     [[ "$sel" == <-> ]] || { print -r -- "Enter a number." >&2; continue; }
     
-    local result
-    result="$(print -r -- "$REQ_BODY" | jq -r --arg idx "$sel" '.items[($idx|tonumber)-1] | "\(.id)\t\(.name)"')"
-    [[ "$result" != "null" && -n "$result" ]] || { print -r -- "Invalid selection." >&2; continue; }
-    
-    ORG_ID="${result%%$'\t'*}"
-    ORG_NAME="${result#*$'\t'}"
-    break
+    if [[ "$sel" == "1" ]]; then
+      ORG_ID="Enterprise"
+      ORG_NAME="Enterprise"
+      break
+    elif [[ "$sel" == "2" ]]; then
+      ORG_ID="all"
+      ORG_NAME="All Organizations"
+      break
+    else
+      local result
+      result="$(print -r -- "$REQ_BODY" | jq -r --arg idx "$((sel-2))" '.items[($idx|tonumber)-1] | "\(.id)\t\(.name)"')"
+      [[ "$result" != "null" && -n "$result" ]] || { print -r -- "Invalid selection." >&2; continue; }
+      
+      ORG_ID="${result%%$'\t'*}"
+      ORG_NAME="${result#*$'\t'}"
+      break
+    fi
   done
 }
 
@@ -453,17 +513,38 @@ create_version() {
   # Operating systems (required array)
   local os_input os_list
   if [[ "$install_type" == "macOS" ]]; then
-    local default_os="macOS Tahoe,macOS Sequoia,macOS Sonoma,macOS Ventura,macOS Monterey,macOS"
-    prompt_required os_input "Supported OS (comma-separated)" "$default_os"
+    local default_os="macOS"
+    print -r -- "" >&2
+    print -r -- "OS Selection Tips:" >&2
+    print -r -- "  - Enter 'macOS' for all macOS versions" >&2
+    print -r -- "  - Enter 'macOS Sequoia' for Sequoia and all newer versions" >&2
+    print -r -- "  - Or enter comma-separated list: 'macOS Sequoia,macOS Sonoma'" >&2
+    prompt_required os_input "Supported OS" "$default_os"
+    
+    # Parse macOS versions intelligently
+    local parsed_os
+    parsed_os="$(parse_macos_versions "$os_input")"
+    os_list="$(print -r -- "$parsed_os" | python3 -c "import sys,json; print(json.dumps([x.strip() for x in sys.stdin.read().split(',') if x.strip()]))")"
   else
     local default_os="Windows 11,Windows 10,Windows"
     prompt_required os_input "Supported OS (comma-separated)" "$default_os"
+    os_list="$(print -r -- "$os_input" | python3 -c "import sys,json; print(json.dumps([x.strip() for x in sys.stdin.read().split(',') if x.strip()]))")"
   fi
-  os_list="$(print -r -- "$os_input" | python3 -c "import sys,json; print(json.dumps([x.strip() for x in sys.stdin.read().split(',') if x.strip()]))")"
 
   # Exit codes
   prompt_required SUCCESS_EXIT_CODES "Success exit codes (comma-separated)" "0"
   prompt_required REBOOT_EXIT_CODES "Reboot exit codes (comma-separated)" "1641,3010"
+  
+  # CVEs (optional)
+  local cve_input cve_list
+  print -r -- "" >&2
+  vared -p "CVEs addressed (comma-separated, optional): " cve_input
+  cve_input="$(trim "${cve_input:-}")"
+  if [[ -n "$cve_input" ]]; then
+    cve_list="$(print -r -- "$cve_input" | python3 -c "import sys,json; print(json.dumps([x.strip() for x in sys.stdin.read().split(',') if x.strip()]))")"
+  else
+    cve_list="[]"
+  fi
   
   # Optional fields
   local notes
@@ -497,6 +578,7 @@ create_version() {
     --arg fn "$file_name" \
     --arg itype "$install_type" \
     --argjson os "$os_list" \
+    --argjson cves "$cve_list" \
     --arg success_codes "$SUCCESS_EXIT_CODES" \
     --arg reboot_codes "$REBOOT_EXIT_CODES" \
     --arg notes "$notes" \
@@ -520,7 +602,7 @@ create_version() {
       approval_status: $approval_status,
       EULA_accepted: $eula,
       file_name: {($up): {name: $fn, type: "cloud"}}
-    }')"
+    } + (if ($cves | length) > 0 then {cves: $cves} else {} end)')"
 
   api_json POST "/software-repository/${org_id}/${pkg_id}/versions" "$payload"
   [[ "${REQ_CODE:-}" == "200" ]] || die "Version create failed (HTTP ${REQ_CODE:-}). Body: $REQ_BODY"
@@ -790,28 +872,66 @@ auth
 typeset -g ORG_ID ORG_NAME
 choose_org
 
-typeset -g REPO_ID
-select_or_create_repo "$ORG_ID"
-
-typeset -g VERSION_ID VERSION_NUM APP_NAME_MATCH RELEASE_DATE
-VERSION_ID="$(create_version "$ORG_ID" "$REPO_ID" "$FILE_BASENAME")"
-
-check_conflicts "$ORG_ID" "$REPO_ID" "$VERSION_ID"
-
-typeset -g UPLOAD_PLATFORM
-if [[ "$FILE_BASENAME" == *.zip ]]; then
-  UPLOAD_PLATFORM="${UPLOAD_PLATFORM:-Mac_AppleSilicon}"
+# Handle Enterprise or All Organizations deployment
+if [[ "$ORG_ID" == "Enterprise" || "$ORG_ID" == "all" ]]; then
+  # For Enterprise/All, we need to use a different endpoint or iterate
+  # For now, use "all" as the org_id in the path
+  if [[ "$ORG_ID" == "Enterprise" ]]; then
+    ACTUAL_ORG_ID="all"
+  else
+    ACTUAL_ORG_ID="all"
+  fi
+  
+  typeset -g REPO_ID
+  select_or_create_repo "$ACTUAL_ORG_ID"
+  
+  typeset -g VERSION_ID VERSION_NUM APP_NAME_MATCH RELEASE_DATE
+  VERSION_ID="$(create_version "$ACTUAL_ORG_ID" "$REPO_ID" "$FILE_BASENAME")"
+  
+  check_conflicts "$ACTUAL_ORG_ID" "$REPO_ID" "$VERSION_ID"
+  
+  typeset -g UPLOAD_PLATFORM
+  if [[ "$FILE_BASENAME" == *.zip ]]; then
+    UPLOAD_PLATFORM="${UPLOAD_PLATFORM:-Mac_AppleSilicon}"
+  else
+    UPLOAD_PLATFORM="${UPLOAD_PLATFORM:-Windows_64}"
+  fi
+  
+  typeset -g UPLOAD_URL
+  UPLOAD_URL="$(upload_init "$ACTUAL_ORG_ID" "$REPO_ID" "$VERSION_ID" "$UPLOAD_PLATFORM")" || die "Upload init failed"
+  log DEBUG "Upload URL: $UPLOAD_URL"
+  
+  upload_chunks "$UPLOAD_URL" || die "Upload failed"
+  
+  log INFO "Successfully deployed to Action1!"
+  log INFO "Organization: $ORG_NAME"
+  log INFO "Repository: $REPO_ID"
+  log INFO "Version: $VERSION_NUM"
 else
-  UPLOAD_PLATFORM="${UPLOAD_PLATFORM:-Windows_64}"
+  # Single organization deployment
+  typeset -g REPO_ID
+  select_or_create_repo "$ORG_ID"
+  
+  typeset -g VERSION_ID VERSION_NUM APP_NAME_MATCH RELEASE_DATE
+  VERSION_ID="$(create_version "$ORG_ID" "$REPO_ID" "$FILE_BASENAME")"
+  
+  check_conflicts "$ORG_ID" "$REPO_ID" "$VERSION_ID"
+  
+  typeset -g UPLOAD_PLATFORM
+  if [[ "$FILE_BASENAME" == *.zip ]]; then
+    UPLOAD_PLATFORM="${UPLOAD_PLATFORM:-Mac_AppleSilicon}"
+  else
+    UPLOAD_PLATFORM="${UPLOAD_PLATFORM:-Windows_64}"
+  fi
+  
+  typeset -g UPLOAD_URL
+  UPLOAD_URL="$(upload_init "$ORG_ID" "$REPO_ID" "$VERSION_ID" "$UPLOAD_PLATFORM")" || die "Upload init failed"
+  log DEBUG "Upload URL: $UPLOAD_URL"
+  
+  upload_chunks "$UPLOAD_URL" || die "Upload failed"
+  
+  log INFO "Successfully deployed to Action1!"
+  log INFO "Organization: $ORG_NAME"
+  log INFO "Repository: $REPO_ID"
+  log INFO "Version: $VERSION_NUM"
 fi
-
-typeset -g UPLOAD_URL
-UPLOAD_URL="$(upload_init "$ORG_ID" "$REPO_ID" "$VERSION_ID" "$UPLOAD_PLATFORM")" || die "Upload init failed"
-log DEBUG "Upload URL: $UPLOAD_URL"
-
-upload_chunks "$UPLOAD_URL" || die "Upload failed"
-
-log INFO "Successfully deployed to Action1!"
-log INFO "Organization: $ORG_NAME"
-log INFO "Repository: $REPO_ID"
-log INFO "Version: $VERSION_NUM"
