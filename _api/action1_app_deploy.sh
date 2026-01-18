@@ -419,7 +419,7 @@ select_or_create_repo() {
 }
 
 #############################################
-# Version Management
+# Version Management (UPDATED)
 #############################################
 create_version() {
   local org_id="$1" pkg_id="$2" file_name="$3"
@@ -427,36 +427,67 @@ create_version() {
   print -r -- "" >&2
   log INFO "Creating new version..."
   
+  # Required fields
   prompt_required VERSION_NUM "Version number"
-  prompt_required APP_NAME_MATCH "App name match (regex)"
+  prompt_required APP_NAME_MATCH "App name match (regex)" "^AppName$"
   
   local release_date
   release_date="$(date +%F)"
   prompt_required RELEASE_DATE "Release date (YYYY-MM-DD)" "$release_date"
   
-  local upload_platform
+  # Determine platform and install_type based on file extension
+  local upload_platform install_type
   if [[ "$file_name" == *.zip ]]; then
     prompt_menu upload_platform "Select Mac platform" "Mac_AppleSilicon" "Mac_IntelCPU"
-  elif [[ "$file_name" == *.msi || "$file_name" == *.exe ]]; then
+    install_type="macOS"
+  elif [[ "$file_name" == *.msi ]]; then
     prompt_menu upload_platform "Select Windows platform" "Windows_64" "Windows_32" "Windows_ARM64"
+    install_type="MSI"
+  elif [[ "$file_name" == *.exe ]]; then
+    prompt_menu upload_platform "Select Windows platform" "Windows_64" "Windows_32" "Windows_ARM64"
+    install_type="EXE"
   else
     die "Unsupported file type. Use .zip for Mac or .msi/.exe for Windows"
   fi
   
+  # Operating systems (required array)
   local os_input os_list
-  vared -p "Supported OS (comma-separated, e.g., macOS Sequoia, macOS Sonoma): " os_input
+  if [[ "$install_type" == "macOS" ]]; then
+    local default_os="macOS Tahoe,macOS Sequoia,macOS Sonoma,macOS Ventura,macOS Monterey,macOS"
+    prompt_required os_input "Supported OS (comma-separated)" "$default_os"
+  else
+    local default_os="Windows 11,Windows 10,Windows"
+    prompt_required os_input "Supported OS (comma-separated)" "$default_os"
+  fi
   os_list="$(print -r -- "$os_input" | python3 -c "import sys,json; print(json.dumps([x.strip() for x in sys.stdin.read().split(',') if x.strip()]))")"
 
-  # Determine install_type based on platform
-  local install_type
-  if [[ "$file_name" == *.zip ]]; then
-    install_type="macOS"
-  elif [[ "$file_name" == *.msi ]]; then
-    install_type="MSI"
-  else
-    install_type="EXE"
-  fi
+  # Exit codes
+  prompt_required SUCCESS_EXIT_CODES "Success exit codes (comma-separated)" "0"
+  prompt_required REBOOT_EXIT_CODES "Reboot exit codes (comma-separated)" "1641,3010"
+  
+  # Optional fields
+  local notes
+  vared -p "Release notes (optional): " notes
+  notes="$(trim "${notes:-}")"
+  
+  local update_type
+  prompt_menu update_type "Update type" "Regular Updates" "Security Updates" "Critical Updates"
+  
+  local security_severity
+  prompt_menu security_severity "Security severity" "Unspecified" "Low" "Medium" "High" "Critical"
+  
+  # Status and approval (using version_status to avoid zsh reserved variable)
+  local version_status
+  prompt_menu version_status "Version status" "Published" "Draft"
+  
+  local approval_status
+  prompt_menu approval_status "Approval status" "New" "Approved" "Declined"
+  
+  # EULA
+  local eula_accepted
+  prompt_menu eula_accepted "EULA acceptance required" "no" "yes"
 
+  # Build the JSON payload
   local payload
   payload="$(jq -nc \
     --arg ver "$VERSION_NUM" \
@@ -466,14 +497,29 @@ create_version() {
     --arg fn "$file_name" \
     --arg itype "$install_type" \
     --argjson os "$os_list" \
+    --arg success_codes "$SUCCESS_EXIT_CODES" \
+    --arg reboot_codes "$REBOOT_EXIT_CODES" \
+    --arg notes "$notes" \
+    --arg update_type "$update_type" \
+    --arg severity "$security_severity" \
+    --arg vstatus "$version_status" \
+    --arg approval_status "$approval_status" \
+    --arg eula "$eula_accepted" \
     '{
-      version:$ver,
-      app_name_match:$match,
-      release_date:$date,
-      os:$os,
-      install_type:$itype,
-      status:"Published",
-      file_name: {($up): {name:$fn, type:"cloud"}}
+      version: $ver,
+      app_name_match: $match,
+      release_date: $date,
+      os: $os,
+      install_type: $itype,
+      success_exit_codes: $success_codes,
+      reboot_exit_codes: $reboot_codes,
+      notes: $notes,
+      update_type: $update_type,
+      security_severity: $severity,
+      status: $vstatus,
+      approval_status: $approval_status,
+      EULA_accepted: $eula,
+      file_name: {($up): {name: $fn, type: "cloud"}}
     }')"
 
   api_json POST "/software-repository/${org_id}/${pkg_id}/versions" "$payload"
