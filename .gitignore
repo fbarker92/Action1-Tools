@@ -5,3 +5,6 @@ local_mnt/**
 *.dmg
 *.pkg
 .env
+.exe
+.msi
+.msix

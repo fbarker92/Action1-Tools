@@ -997,7 +997,623 @@ function Write-ManifestFile {
     }
 }
 
-#endregion
+#region Installer Metadata Extraction Functions
+
+function Get-MsiMetadata {
+    <#
+    .SYNOPSIS
+        Extracts metadata from MSI installer files by querying the MSI database.
+
+    .DESCRIPTION
+        Uses the WindowsInstaller.Installer COM object to query the Property table
+        of an MSI file for ProductName, ProductVersion, Manufacturer, and other metadata.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    Write-Action1Log "Attempting to extract MSI database metadata from: $Path" -Level DEBUG
+
+    $result = @{
+        Success = $false
+        ProductName = $null
+        ProductVersion = $null
+        Manufacturer = $null
+        Description = $null
+        Source = "MSI Database"
+    }
+
+    try {
+        $windowsInstaller = New-Object -ComObject WindowsInstaller.Installer
+        $database = $windowsInstaller.GetType().InvokeMember(
+            "OpenDatabase",
+            [System.Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $windowsInstaller,
+            @($Path, 0)  # 0 = msiOpenDatabaseModeReadOnly
+        )
+
+        # Query the Property table for metadata
+        $propertyQuery = "SELECT Property, Value FROM Property WHERE Property IN ('ProductName', 'ProductVersion', 'Manufacturer', 'ARPCOMMENTS', 'ProductCode')"
+
+        $view = $database.GetType().InvokeMember(
+            "OpenView",
+            [System.Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $database,
+            @($propertyQuery)
+        )
+
+        $view.GetType().InvokeMember(
+            "Execute",
+            [System.Reflection.BindingFlags]::InvokeMethod,
+            $null,
+            $view,
+            $null
+        )
+
+        $properties = @{}
+        do {
+            $record = $view.GetType().InvokeMember(
+                "Fetch",
+                [System.Reflection.BindingFlags]::InvokeMethod,
+                $null,
+                $view,
+                $null
+            )
+
+            if ($null -ne $record) {
+                $propertyName = $record.GetType().InvokeMember(
+                    "StringData",
+                    [System.Reflection.BindingFlags]::GetProperty,
+                    $null,
+                    $record,
+                    @(1)
+                )
+                $propertyValue = $record.GetType().InvokeMember(
+                    "StringData",
+                    [System.Reflection.BindingFlags]::GetProperty,
+                    $null,
+                    $record,
+                    @(2)
+                )
+                $properties[$propertyName] = $propertyValue
+            }
+        } while ($null -ne $record)
+
+        $view.GetType().InvokeMember("Close", [System.Reflection.BindingFlags]::InvokeMethod, $null, $view, $null)
+
+        # Release COM objects
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($view) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($database) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($windowsInstaller) | Out-Null
+
+        if ($properties.Count -gt 0) {
+            $result.ProductName = $properties['ProductName']
+            $result.ProductVersion = $properties['ProductVersion']
+            $result.Manufacturer = $properties['Manufacturer']
+            $result.Description = $properties['ARPCOMMENTS']
+            $result.Success = ($null -ne $result.ProductName -or $null -ne $result.ProductVersion)
+
+            Write-Action1Log "MSI database metadata extracted successfully" -Level DEBUG -Data $properties
+        }
+    }
+    catch {
+        Write-Action1Log "Failed to extract MSI database metadata" -Level DEBUG -ErrorRecord $_
+    }
+
+    return $result
+}
+
+function Get-DigitalSignatureMetadata {
+    <#
+    .SYNOPSIS
+        Extracts metadata from the digital signature/code signing certificate of an installer.
+
+    .DESCRIPTION
+        Parses the Authenticode signature to extract publisher information from the
+        signing certificate's subject field.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    Write-Action1Log "Attempting to extract digital signature metadata from: $Path" -Level DEBUG
+
+    $result = @{
+        Success = $false
+        Publisher = $null
+        Subject = $null
+        Issuer = $null
+        SignatureStatus = $null
+        Source = "Digital Signature"
+    }
+
+    try {
+        $signature = Get-AuthenticodeSignature -FilePath $Path -ErrorAction Stop
+
+        if ($signature.Status -ne 'NotSigned' -and $null -ne $signature.SignerCertificate) {
+            $result.SignatureStatus = $signature.Status.ToString()
+            $result.Subject = $signature.SignerCertificate.Subject
+            $result.Issuer = $signature.SignerCertificate.Issuer
+
+            # Parse the subject to extract organization/company name
+            # Subject format: CN=Company Name, O=Organization, L=City, S=State, C=Country
+            $subject = $signature.SignerCertificate.Subject
+
+            # Try to extract O (Organization) first, then CN (Common Name)
+            if ($subject -match 'O=([^,]+)') {
+                $result.Publisher = $matches[1].Trim().Trim('"')
+            }
+            elseif ($subject -match 'CN=([^,]+)') {
+                $result.Publisher = $matches[1].Trim().Trim('"')
+            }
+
+            $result.Success = ($null -ne $result.Publisher)
+
+            Write-Action1Log "Digital signature metadata extracted" -Level DEBUG -Data @{
+                Publisher = $result.Publisher
+                Status = $result.SignatureStatus
+                Subject = $result.Subject
+            }
+        }
+        else {
+            Write-Action1Log "File is not signed or signature is invalid" -Level DEBUG
+        }
+    }
+    catch {
+        Write-Action1Log "Failed to extract digital signature metadata" -Level DEBUG -ErrorRecord $_
+    }
+
+    return $result
+}
+
+function Get-InnoSetupMetadata {
+    <#
+    .SYNOPSIS
+        Extracts metadata from Inno Setup installers.
+
+    .DESCRIPTION
+        Detects Inno Setup installers by signature and attempts to extract
+        embedded setup information including AppName, AppVersion, AppPublisher.
+        Uses binary pattern matching to find the embedded setup script data.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    Write-Action1Log "Attempting to extract Inno Setup metadata from: $Path" -Level DEBUG
+
+    $result = @{
+        Success = $false
+        ProductName = $null
+        ProductVersion = $null
+        Publisher = $null
+        InstallerType = $null
+        Source = "Inno Setup"
+    }
+
+    try {
+        # Read the first portion of the file to check for Inno Setup signatures
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $fileContent = [System.Text.Encoding]::ASCII.GetString($bytes[0..([Math]::Min(2MB, $bytes.Length - 1))])
+
+        # Check for Inno Setup signatures
+        $isInnoSetup = $false
+        $innoSignatures = @(
+            'Inno Setup',
+            'InnoSetupVersion',
+            'Inno Setup Setup Data',
+            'inno.exe'
+        )
+
+        foreach ($sig in $innoSignatures) {
+            if ($fileContent -match [regex]::Escape($sig)) {
+                $isInnoSetup = $true
+                $result.InstallerType = "Inno Setup"
+                break
+            }
+        }
+
+        if (-not $isInnoSetup) {
+            Write-Action1Log "File does not appear to be an Inno Setup installer" -Level DEBUG
+            return $result
+        }
+
+        Write-Action1Log "Inno Setup signature detected, extracting metadata..." -Level DEBUG
+
+        # Try to find embedded script data patterns
+        # Inno Setup stores strings in a specific format, often with null-terminated or length-prefixed strings
+
+        # Look for common Inno Setup script patterns in the binary
+        $patterns = @{
+            'AppName' = 'AppName=([^\x00\r\n]+)'
+            'AppVersion' = 'AppVersion=([^\x00\r\n]+)'
+            'AppVerName' = 'AppVerName=([^\x00\r\n]+)'
+            'AppPublisher' = 'AppPublisher=([^\x00\r\n]+)'
+            'AppPublisherURL' = 'AppPublisherURL=([^\x00\r\n]+)'
+            'DefaultDirName' = 'DefaultDirName=([^\x00\r\n]+)'
+        }
+
+        $foundValues = @{}
+        foreach ($key in $patterns.Keys) {
+            if ($fileContent -match $patterns[$key]) {
+                $value = $matches[1].Trim()
+                # Clean up the value - remove any binary garbage
+                $value = $value -replace '[^\x20-\x7E]', ''
+                if ($value.Length -gt 0 -and $value.Length -lt 200) {
+                    $foundValues[$key] = $value
+                }
+            }
+        }
+
+        # Also try to find version info from common patterns
+        if (-not $foundValues['AppVersion']) {
+            # Try pattern like "1.2.3" or "v1.2.3" near AppName or version markers
+            if ($fileContent -match 'ersion[=:\s]+v?(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)') {
+                $foundValues['AppVersion'] = $matches[1]
+            }
+        }
+
+        if ($foundValues.Count -gt 0) {
+            $result.ProductName = $foundValues['AppName']
+            $result.ProductVersion = $foundValues['AppVersion']
+            $result.Publisher = $foundValues['AppPublisher']
+
+            # AppVerName often contains both name and version
+            if (-not $result.ProductName -and $foundValues['AppVerName']) {
+                $verName = $foundValues['AppVerName']
+                # Try to split "AppName v1.2.3" or "AppName 1.2.3"
+                if ($verName -match '^(.+?)\s+v?(\d+\.\d+.*)$') {
+                    $result.ProductName = $matches[1]
+                    if (-not $result.ProductVersion) {
+                        $result.ProductVersion = $matches[2]
+                    }
+                }
+                else {
+                    $result.ProductName = $verName
+                }
+            }
+
+            $result.Success = ($null -ne $result.ProductName -or $null -ne $result.ProductVersion -or $null -ne $result.Publisher)
+
+            Write-Action1Log "Inno Setup metadata extracted" -Level DEBUG -Data $foundValues
+        }
+    }
+    catch {
+        Write-Action1Log "Failed to extract Inno Setup metadata" -Level DEBUG -ErrorRecord $_
+    }
+
+    return $result
+}
+
+function Get-NsisMetadata {
+    <#
+    .SYNOPSIS
+        Extracts metadata from NSIS (Nullsoft Scriptable Install System) installers.
+
+    .DESCRIPTION
+        Detects NSIS installers by signature and attempts to extract
+        embedded metadata including product name, version, and publisher.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    Write-Action1Log "Attempting to extract NSIS metadata from: $Path" -Level DEBUG
+
+    $result = @{
+        Success = $false
+        ProductName = $null
+        ProductVersion = $null
+        Publisher = $null
+        InstallerType = $null
+        Source = "NSIS"
+    }
+
+    try {
+        # Read the file content
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $fileContent = [System.Text.Encoding]::ASCII.GetString($bytes[0..([Math]::Min(2MB, $bytes.Length - 1))])
+
+        # Check for NSIS signatures
+        $isNsis = $false
+        $nsisSignatures = @(
+            'NullsoftInst',
+            'Nullsoft Install System',
+            'NSIS Error',
+            'nsis.sf.net'
+        )
+
+        foreach ($sig in $nsisSignatures) {
+            if ($fileContent -match [regex]::Escape($sig)) {
+                $isNsis = $true
+                $result.InstallerType = "NSIS"
+                break
+            }
+        }
+
+        if (-not $isNsis) {
+            Write-Action1Log "File does not appear to be an NSIS installer" -Level DEBUG
+            return $result
+        }
+
+        Write-Action1Log "NSIS signature detected, extracting metadata..." -Level DEBUG
+
+        # NSIS installers often have strings embedded that we can extract
+        # Look for common patterns
+
+        # Try to find Name and Version from NSIS script defines
+        # NSIS uses !define statements which may be embedded
+
+        $patterns = @{
+            'PRODUCT_NAME' = '(?:PRODUCT_NAME|APP_NAME|NAME)[="\s]+([^\x00\r\n"]+)'
+            'PRODUCT_VERSION' = '(?:PRODUCT_VERSION|APP_VERSION|VERSION)[="\s]+v?([0-9][^\x00\r\n"]*)'
+            'PRODUCT_PUBLISHER' = '(?:PRODUCT_PUBLISHER|PUBLISHER|COMPANY)[="\s]+([^\x00\r\n"]+)'
+        }
+
+        $foundValues = @{}
+        foreach ($key in $patterns.Keys) {
+            if ($fileContent -match $patterns[$key]) {
+                $value = $matches[1].Trim().Trim('"')
+                $value = $value -replace '[^\x20-\x7E]', ''
+                if ($value.Length -gt 0 -and $value.Length -lt 200) {
+                    $foundValues[$key] = $value
+                }
+            }
+        }
+
+        # Also look for branding text which often contains product info
+        if ($fileContent -match 'Nullsoft Install System v[\d.]+') {
+            # Try to find the installer title near the beginning
+            if ($fileContent -match '(?<=\x00)([A-Za-z][A-Za-z0-9\s\-_.]+(?:Setup|Install(?:er)?|v?\d+\.\d+)[A-Za-z0-9\s\-_.]*?)(?=\x00)') {
+                $potentialName = $matches[1].Trim()
+                if ($potentialName.Length -gt 3 -and $potentialName.Length -lt 100 -and -not $foundValues['PRODUCT_NAME']) {
+                    $foundValues['PRODUCT_NAME'] = $potentialName -replace '\s*(Setup|Installer?)$', ''
+                }
+            }
+        }
+
+        if ($foundValues.Count -gt 0) {
+            $result.ProductName = $foundValues['PRODUCT_NAME']
+            $result.ProductVersion = $foundValues['PRODUCT_VERSION']
+            $result.Publisher = $foundValues['PRODUCT_PUBLISHER']
+            $result.Success = ($null -ne $result.ProductName -or $null -ne $result.ProductVersion -or $null -ne $result.Publisher)
+
+            Write-Action1Log "NSIS metadata extracted" -Level DEBUG -Data $foundValues
+        }
+    }
+    catch {
+        Write-Action1Log "Failed to extract NSIS metadata" -Level DEBUG -ErrorRecord $_
+    }
+
+    return $result
+}
+
+function Get-FileVersionMetadata {
+    <#
+    .SYNOPSIS
+        Extracts metadata from PE file version information resources.
+
+    .DESCRIPTION
+        Uses System.Diagnostics.FileVersionInfo to read the standard Windows
+        version resource embedded in PE files.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    Write-Action1Log "Extracting file version info metadata from: $Path" -Level DEBUG
+
+    $result = @{
+        Success = $false
+        ProductName = $null
+        ProductVersion = $null
+        FileVersion = $null
+        Publisher = $null
+        Description = $null
+        Source = "File Version Info"
+    }
+
+    try {
+        $fileVersionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+
+        $result.ProductName = if ($fileVersionInfo.ProductName) { $fileVersionInfo.ProductName.Trim() } else { $null }
+        $result.ProductVersion = if ($fileVersionInfo.ProductVersion) {
+            ($fileVersionInfo.ProductVersion -split '[\s\-]')[0].Trim()
+        } else { $null }
+        $result.FileVersion = if ($fileVersionInfo.FileVersion) {
+            ($fileVersionInfo.FileVersion -split '[\s\-]')[0].Trim()
+        } else { $null }
+        $result.Publisher = if ($fileVersionInfo.CompanyName) { $fileVersionInfo.CompanyName.Trim() } else { $null }
+        $result.Description = if ($fileVersionInfo.FileDescription) { $fileVersionInfo.FileDescription.Trim() } else { $null }
+
+        $result.Success = ($null -ne $result.ProductName -or $null -ne $result.ProductVersion -or $null -ne $result.Publisher)
+
+        Write-Action1Log "File version info metadata extracted" -Level DEBUG -Data @{
+            ProductName = $result.ProductName
+            ProductVersion = $result.ProductVersion
+            FileVersion = $result.FileVersion
+            Publisher = $result.Publisher
+            Description = $result.Description
+        }
+    }
+    catch {
+        Write-Action1Log "Failed to extract file version info metadata" -Level DEBUG -ErrorRecord $_
+    }
+
+    return $result
+}
+
+function Get-InstallerMetadata {
+    <#
+    .SYNOPSIS
+        Comprehensive metadata extraction from installer files with multiple fallback methods.
+
+    .DESCRIPTION
+        Attempts to extract metadata from installers using multiple techniques:
+        1. MSI database querying (for .msi files)
+        2. PE file version information
+        3. Digital signature certificate parsing
+        4. Inno Setup script extraction
+        5. NSIS installer detection and extraction
+
+        Results are merged with priority given to more reliable sources.
+
+    .PARAMETER Path
+        Path to the installer file (.exe or .msi)
+
+    .EXAMPLE
+        $metadata = Get-InstallerMetadata -Path "C:\Downloads\setup.exe"
+        Write-Host "Product: $($metadata.ProductName) v$($metadata.ProductVersion) by $($metadata.Publisher)"
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path $Path)) {
+        throw "Installer file not found: $Path"
+    }
+
+    $installerFile = Get-Item $Path
+    $extension = $installerFile.Extension.ToLower()
+
+    Write-Action1Log "Starting comprehensive metadata extraction for: $($installerFile.Name)" -Level INFO
+
+    # Initialize result with defaults
+    $result = @{
+        ProductName = $null
+        ProductVersion = $null
+        Publisher = $null
+        Description = $null
+        InstallerType = $null
+        Sources = @()
+        AllMetadata = @{}
+    }
+
+    # Collection of all extraction results for debugging/logging
+    $extractionResults = @()
+
+    # 1. MSI Database (highest priority for MSI files)
+    if ($extension -eq '.msi') {
+        Write-Host "  Querying MSI database..." -ForegroundColor Gray
+        $msiResult = Get-MsiMetadata -Path $Path
+        $extractionResults += $msiResult
+        $result.AllMetadata['MSI'] = $msiResult
+
+        if ($msiResult.Success) {
+            $result.Sources += "MSI Database"
+            if (-not $result.ProductName -and $msiResult.ProductName) { $result.ProductName = $msiResult.ProductName }
+            if (-not $result.ProductVersion -and $msiResult.ProductVersion) { $result.ProductVersion = $msiResult.ProductVersion }
+            if (-not $result.Publisher -and $msiResult.Manufacturer) { $result.Publisher = $msiResult.Manufacturer }
+            if (-not $result.Description -and $msiResult.Description) { $result.Description = $msiResult.Description }
+            $result.InstallerType = "MSI"
+        }
+    }
+
+    # 2. File Version Info (works for both EXE and MSI)
+    Write-Host "  Reading file version information..." -ForegroundColor Gray
+    $versionResult = Get-FileVersionMetadata -Path $Path
+    $extractionResults += $versionResult
+    $result.AllMetadata['FileVersion'] = $versionResult
+
+    if ($versionResult.Success) {
+        $result.Sources += "File Version Info"
+        if (-not $result.ProductName -and $versionResult.ProductName) { $result.ProductName = $versionResult.ProductName }
+        if (-not $result.ProductVersion -and $versionResult.ProductVersion) { $result.ProductVersion = $versionResult.ProductVersion }
+        if (-not $result.ProductVersion -and $versionResult.FileVersion) { $result.ProductVersion = $versionResult.FileVersion }
+        if (-not $result.Publisher -and $versionResult.Publisher) { $result.Publisher = $versionResult.Publisher }
+        if (-not $result.Description -and $versionResult.Description) { $result.Description = $versionResult.Description }
+    }
+
+    # 3. Digital Signature (good for publisher info)
+    Write-Host "  Checking digital signature..." -ForegroundColor Gray
+    $sigResult = Get-DigitalSignatureMetadata -Path $Path
+    $extractionResults += $sigResult
+    $result.AllMetadata['DigitalSignature'] = $sigResult
+
+    if ($sigResult.Success) {
+        $result.Sources += "Digital Signature"
+        # Only use signature for publisher if we don't have one yet
+        if (-not $result.Publisher -and $sigResult.Publisher) { $result.Publisher = $sigResult.Publisher }
+    }
+
+    # 4. Inno Setup detection and extraction (for EXE files)
+    if ($extension -eq '.exe') {
+        Write-Host "  Checking for Inno Setup installer..." -ForegroundColor Gray
+        $innoResult = Get-InnoSetupMetadata -Path $Path
+        $extractionResults += $innoResult
+        $result.AllMetadata['InnoSetup'] = $innoResult
+
+        if ($innoResult.Success) {
+            $result.Sources += "Inno Setup"
+            $result.InstallerType = "Inno Setup"
+            if (-not $result.ProductName -and $innoResult.ProductName) { $result.ProductName = $innoResult.ProductName }
+            if (-not $result.ProductVersion -and $innoResult.ProductVersion) { $result.ProductVersion = $innoResult.ProductVersion }
+            if (-not $result.Publisher -and $innoResult.Publisher) { $result.Publisher = $innoResult.Publisher }
+        }
+
+        # 5. NSIS detection and extraction (for EXE files, if not Inno)
+        if (-not $innoResult.Success -or -not $result.InstallerType) {
+            Write-Host "  Checking for NSIS installer..." -ForegroundColor Gray
+            $nsisResult = Get-NsisMetadata -Path $Path
+            $extractionResults += $nsisResult
+            $result.AllMetadata['NSIS'] = $nsisResult
+
+            if ($nsisResult.Success) {
+                $result.Sources += "NSIS"
+                if (-not $result.InstallerType) { $result.InstallerType = "NSIS" }
+                if (-not $result.ProductName -and $nsisResult.ProductName) { $result.ProductName = $nsisResult.ProductName }
+                if (-not $result.ProductVersion -and $nsisResult.ProductVersion) { $result.ProductVersion = $nsisResult.ProductVersion }
+                if (-not $result.Publisher -and $nsisResult.Publisher) { $result.Publisher = $nsisResult.Publisher }
+            }
+        }
+    }
+
+    # Set default installer type if not detected
+    if (-not $result.InstallerType) {
+        $result.InstallerType = switch ($extension) {
+            '.msi' { 'MSI' }
+            '.exe' { 'EXE' }
+            default { 'Unknown' }
+        }
+    }
+
+    # Apply final fallbacks
+    if (-not $result.ProductName) {
+        $result.ProductName = [System.IO.Path]::GetFileNameWithoutExtension($installerFile.Name)
+        $result.Sources += "Filename (fallback)"
+    }
+    if (-not $result.ProductVersion) {
+        $result.ProductVersion = "1.0.0"
+        $result.Sources += "Default version (fallback)"
+    }
+    if (-not $result.Publisher) {
+        $result.Publisher = "Unknown"
+    }
+
+    Write-Action1Log "Metadata extraction complete" -Level INFO -Data @{
+        ProductName = $result.ProductName
+        ProductVersion = $result.ProductVersion
+        Publisher = $result.Publisher
+        InstallerType = $result.InstallerType
+        Sources = $result.Sources -join ', '
+    }
+
+    return $result
+}
 
 #region Public Functions
 
@@ -1342,178 +1958,295 @@ Write-Host "Post-installation complete."
 function New-Action1AppPackage {
     <#
     .SYNOPSIS
-        Packages an application for Action1 deployment.
+        Creates a new Action1 application package from an installer file.
 
     .DESCRIPTION
-        Prepares an application package by gathering installer information,
-        prompting for installation switches, and updating the manifest file.
+        Automatically scrapes application metadata (name, version, vendor) from installer
+        file properties, prompts for silent install arguments, creates the package folder
+        structure in /vendor/app/version/ format, and generates a manifest file.
 
-    .PARAMETER ManifestPath
-        Path to the manifest.json file.
+    .PARAMETER InstallerPath
+        Path to the installer file (.exe or .msi).
 
-    .PARAMETER Interactive
-        If specified, prompts user for all configuration options.
+    .PARAMETER BasePath
+        Base path where the package folder structure will be created.
+        Defaults to current directory.
+
+    .PARAMETER InstallSwitches
+        Silent install arguments. If not provided, will prompt interactively.
+
+    .PARAMETER UninstallSwitches
+        Silent uninstall arguments. Optional.
+
+    .PARAMETER SkipPrompt
+        If specified, skips the prompt for silent install arguments and uses defaults.
 
     .EXAMPLE
-        New-Action1AppPackage -ManifestPath ".\7-Zip\manifest.json" -Interactive
+        New-Action1AppPackage -InstallerPath "C:\Downloads\7z2301-x64.exe"
+
+    .EXAMPLE
+        New-Action1AppPackage -InstallerPath "C:\Downloads\vlc-3.0.18-win64.msi" -BasePath "C:\Packages" -InstallSwitches "/qn /norestart"
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$ManifestPath,
-        
+        [ValidateScript({ Test-Path $_ -PathType Leaf })]
+        [string]$InstallerPath,
+
         [Parameter()]
-        [switch]$Interactive
+        [string]$BasePath = (Get-Location).Path,
+
+        [Parameter()]
+        [string]$InstallSwitches,
+
+        [Parameter()]
+        [string]$UninstallSwitches,
+
+        [Parameter()]
+        [switch]$SkipPrompt
     )
-    
+
     Write-Host "`n=== Action1 Application Packager ===" -ForegroundColor Cyan
-    
-    # Load manifest
-    $manifest = Read-ManifestFile -Path $ManifestPath
-    $repoPath = Split-Path $ManifestPath -Parent
-    $installersPath = Join-Path $repoPath "installers"
-    
-    # Find installer files
-    $installerFiles = Get-ChildItem -Path $installersPath -File -ErrorAction SilentlyContinue
-    
-    if (-not $installerFiles) {
-        Write-Warning "No installer files found in $installersPath"
-        Write-Host "Please place your installer file in the installers directory."
-        return
+    Write-Action1Log "Creating new application package from: $InstallerPath" -Level INFO
+
+    # Get installer file info
+    $installerFile = Get-Item $InstallerPath
+    $installerExtension = $installerFile.Extension.ToLower()
+
+    # Validate installer type
+    if ($installerExtension -notin @('.exe', '.msi')) {
+        throw "Unsupported installer type: $installerExtension. Only .exe and .msi files are supported."
     }
-    
-    # If multiple installers, let user choose
-    if ($installerFiles.Count -gt 1) {
-        Write-Host "`nMultiple installer files found:" -ForegroundColor Yellow
-        for ($i = 0; $i -lt $installerFiles.Count; $i++) {
-            Write-Host "  [$($i+1)] $($installerFiles[$i].Name) ($([math]::Round($installerFiles[$i].Length / 1MB, 2)) MB)"
-        }
-        $selection = Read-Host "`nSelect installer number"
-        $installerFile = $installerFiles[$selection - 1]
-    } else {
-        $installerFile = $installerFiles[0]
-    }
-    
-    Write-Host "`nSelected installer: $($installerFile.Name)" -ForegroundColor Green
-    
-    # Determine installer type
-    $installerType = switch ($installerFile.Extension.ToLower()) {
-        '.msi' { 'msi' }
-        '.exe' { 'exe' }
-        '.ps1' { 'powershell' }
-        default { 'unknown' }
-    }
-    
-    $manifest.InstallerType = $installerType
-    $manifest.InstallerFileName = $installerFile.Name
-    
-    # Interactive configuration
-    if ($Interactive) {
-        Write-Host "`n--- Application Information ---" -ForegroundColor Cyan
-        
-        $appName = Read-Host "Application Name [$($manifest.AppName)]"
-        if ($appName) { $manifest.AppName = $appName }
-        
-        $publisher = Read-Host "Publisher [$($manifest.Publisher)]"
-        if ($publisher) { $manifest.Publisher = $publisher }
-        
-        $version = Read-Host "Version [$($manifest.Version)]"
-        if ($version) { $manifest.Version = $version }
-        
-        $description = Read-Host "Description [$($manifest.Description)]"
-        if ($description) { $manifest.Description = $description }
-        
-        Write-Host "`n--- Installation Configuration ---" -ForegroundColor Cyan
-        
-        # Install switches based on type
+
+    Write-Host "`nAnalyzing installer: $($installerFile.Name)" -ForegroundColor Yellow
+    Write-Action1Log "Installer file: $($installerFile.FullName)" -Level DEBUG
+    Write-Action1Log "Installer size: $([math]::Round($installerFile.Length / 1MB, 2)) MB" -Level DEBUG
+
+    # Use comprehensive metadata extraction with multiple fallback methods
+    Write-Host "Extracting metadata (using multiple extraction methods)..." -ForegroundColor Cyan
+    $metadata = Get-InstallerMetadata -Path $installerFile.FullName
+
+    $appName = $metadata.ProductName
+    $appVersion = $metadata.ProductVersion
+    $publisher = $metadata.Publisher
+    $description = $metadata.Description
+    $installerType = $metadata.InstallerType.ToLower()
+
+    # Display extracted information
+    Write-Host "`n--- Extracted Application Information ---" -ForegroundColor Cyan
+    Write-Host "  Application Name: $appName"
+    Write-Host "  Version: $appVersion"
+    Write-Host "  Publisher/Vendor: $publisher"
+    Write-Host "  Description: $description"
+    Write-Host "  Installer Type: $installerType"
+    Write-Host "  Data Sources: $($metadata.Sources -join ', ')" -ForegroundColor DarkGray
+
+    # Prompt for silent install arguments if not provided
+    if (-not $InstallSwitches -and -not $SkipPrompt) {
+        Write-Host "`n--- Silent Install Arguments ---" -ForegroundColor Cyan
+
         if ($installerType -eq 'msi') {
-            Write-Host "`nDefault MSI switches: $script:DefaultMsiSwitches (automatically added by Action1)"
-            Write-Host "You can add additional switches if needed."
-            $additionalSwitches = Read-Host "Additional install switches (optional)"
-            if ($additionalSwitches) {
-                $manifest.InstallSwitches = $additionalSwitches
+            Write-Host "Default MSI switches: $script:DefaultMsiSwitches (automatically added by Action1)"
+            Write-Host "You can add additional switches if needed (e.g., INSTALLDIR=`"C:\Program Files\App`")"
+            $InstallSwitches = Read-Host "Additional install switches (press Enter for none)"
+        } else {
+            Write-Host "Common silent install switches:"
+            # Show context-aware suggestions based on detected installer type
+            if ($installerType -eq 'inno setup') {
+                Write-Host "  /verysilent /norestart - Inno Setup (Recommended for this installer)" -ForegroundColor Green
+                Write-Host "  /silent /norestart     - Inno Setup (shows progress)"
+                $defaultSwitch = "/verysilent /norestart"
+            } elseif ($installerType -eq 'nsis') {
+                Write-Host "  /S                     - NSIS silent (Recommended for this installer)" -ForegroundColor Green
+                $defaultSwitch = "/S"
             } else {
-                $manifest.InstallSwitches = ""
+                Write-Host "  /S or /silent      - Generic silent (NSIS, many others)"
+                Write-Host "  /quiet /norestart  - Many installers"
+                Write-Host "  /verysilent /norestart - Inno Setup"
+                Write-Host "  -q -norestart      - Some installers"
+                Write-Host "  --silent           - Some modern installers"
+                $defaultSwitch = "/S"
             }
-        } elseif ($installerType -eq 'exe') {
-            Write-Host "`nCommon silent install switches:"
-            Write-Host "  /S or /silent - Generic silent"
-            Write-Host "  /quiet /norestart - Many installers"
-            Write-Host "  /verysilent /norestart - Inno Setup"
-            Write-Host "  -q -norestart - Some installers"
-            $installSwitches = Read-Host "Install switches [$($manifest.InstallSwitches)]"
-            if ($installSwitches) { $manifest.InstallSwitches = $installSwitches }
-        }
-        
-        $uninstallSwitches = Read-Host "Uninstall switches [$($manifest.UninstallSwitches)]"
-        if ($uninstallSwitches) { $manifest.UninstallSwitches = $uninstallSwitches }
-        
-        Write-Host "`n--- Detection Method ---" -ForegroundColor Cyan
-        Write-Host "How should Action1 detect if this app is installed?"
-        Write-Host "  [1] Registry key"
-        Write-Host "  [2] File path"
-        Write-Host "  [3] Custom script"
-        $detectionChoice = Read-Host "Choice [1]"
-        
-        switch ($detectionChoice) {
-            '2' {
-                $manifest.DetectionMethod.Type = 'file'
-                $filePath = Read-Host "File path to check"
-                $manifest.DetectionMethod.Path = $filePath
-            }
-            '3' {
-                $manifest.DetectionMethod.Type = 'script'
-                Write-Host "A detection script file will need to be created in the scripts folder."
-                $manifest.DetectionMethod.Path = (Join-Path "scripts" "detect.ps1")
-            }
-            default {
-                $manifest.DetectionMethod.Type = 'registry'
-                $regPath = Read-Host "Registry path [$($manifest.DetectionMethod.Path)]"
-                if ($regPath) { $manifest.DetectionMethod.Path = $regPath }
+            $InstallSwitches = Read-Host "Install switches [$defaultSwitch]"
+            if (-not $InstallSwitches) {
+                $InstallSwitches = $defaultSwitch
             }
         }
-        
-        Write-Host "`n--- System Requirements ---" -ForegroundColor Cyan
-        $arch = Read-Host "Architecture (x86/x64/both) [$($manifest.Requirements.Architecture)]"
-        if ($arch) { $manifest.Requirements.Architecture = $arch }
-        
-        $diskSpace = Read-Host "Minimum disk space (MB) [$($manifest.Requirements.MinDiskSpaceMB)]"
-        if ($diskSpace) { $manifest.Requirements.MinDiskSpaceMB = [int]$diskSpace }
-        
-        $memory = Read-Host "Minimum memory (MB) [$($manifest.Requirements.MinMemoryMB)]"
-        if ($memory) { $manifest.Requirements.MinMemoryMB = [int]$memory }
-    } else {
-        # Non-interactive: apply smart defaults for common installers
-        if ($installerType -eq 'msi' -and -not $manifest.InstallSwitches) {
-            $manifest.InstallSwitches = ""
-            Write-Host "Using default MSI switches (Action1 adds /qn /norestart automatically)"
-        } elseif ($installerType -eq 'exe' -and -not $manifest.InstallSwitches) {
-            $manifest.InstallSwitches = "/S"
-            Write-Host "Using default EXE switch: /S"
+    } elseif (-not $InstallSwitches -and $SkipPrompt) {
+        # Apply smart defaults based on detected installer type
+        $InstallSwitches = switch ($installerType) {
+            'msi' { "" }
+            'inno setup' { "/verysilent /norestart" }
+            'nsis' { "/S" }
+            default { "/S" }
         }
     }
-    
-    # Update timestamps
-    $manifest.LastModified = Get-Date -Format "yyyy-MM-dd"
-    
+
+    # Prompt for uninstall switches if not provided
+    if (-not $UninstallSwitches -and -not $SkipPrompt) {
+        $defaultUninstall = switch ($installerType) {
+            'msi' { "" }
+            'inno setup' { "/verysilent /norestart" }
+            'nsis' { "/S" }
+            default { "/S" }
+        }
+        $UninstallSwitches = Read-Host "Uninstall switches [$defaultUninstall]"
+        if (-not $UninstallSwitches) {
+            $UninstallSwitches = $defaultUninstall
+        }
+    } elseif (-not $UninstallSwitches -and $SkipPrompt) {
+        $UninstallSwitches = switch ($installerType) {
+            'msi' { "" }
+            'inno setup' { "/verysilent /norestart" }
+            'nsis' { "/S" }
+            default { "/S" }
+        }
+    }
+
+    # Sanitize names for folder creation
+    $sanitizedPublisher = $publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $sanitizedAppName = $appName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $sanitizedVersion = $appVersion -replace '[\\/:*?"<>|]', '_'
+
+    # Create folder structure: /vendor/app/version/
+    $packagePath = Join-Path $BasePath $sanitizedPublisher $sanitizedAppName $sanitizedVersion
+
+    Write-Host "`n--- Creating Package Structure ---" -ForegroundColor Cyan
+    Write-Host "Package path: $packagePath"
+    Write-Action1Log "Creating package folder structure: $packagePath" -Level INFO
+
+    # Create directories
+    $directories = @(
+        $packagePath,
+        (Join-Path $packagePath "installers"),
+        (Join-Path $packagePath "scripts"),
+        (Join-Path $packagePath "documentation")
+    )
+
+    foreach ($dir in $directories) {
+        if (-not (Test-Path $dir)) {
+            Write-Action1Log "Creating directory: $dir" -Level DEBUG
+            New-Item -Path $dir -ItemType Directory -Force | Out-Null
+            Write-Host "  Created: $dir" -ForegroundColor Gray
+        } else {
+            Write-Action1Log "Directory already exists: $dir" -Level WARN
+            Write-Host "  Exists: $dir" -ForegroundColor Yellow
+        }
+    }
+
+    # Copy installer to the installers folder
+    $destinationInstaller = Join-Path $packagePath "installers" $installerFile.Name
+    Write-Host "`nCopying installer to package..." -ForegroundColor Cyan
+    Write-Action1Log "Copying installer from $($installerFile.FullName) to $destinationInstaller" -Level DEBUG
+    Copy-Item -Path $installerFile.FullName -Destination $destinationInstaller -Force
+    Write-Host "  Copied: $($installerFile.Name)" -ForegroundColor Gray
+
+    # Create manifest
+    $manifest = [PSCustomObject]@{
+        AppName = $appName
+        Publisher = $publisher
+        Description = $description
+        Version = $appVersion
+        CreatedDate = Get-Date -Format "yyyy-MM-dd"
+        LastModified = Get-Date -Format "yyyy-MM-dd"
+        InstallerType = $installerType
+        InstallerFileName = $installerFile.Name
+        InstallSwitches = $InstallSwitches
+        UninstallSwitches = $UninstallSwitches
+        DetectionMethod = @{
+            Type = "registry"
+            Path = ""
+            Value = ""
+        }
+        Requirements = @{
+            OSVersion = ""
+            Architecture = "x64"
+            MinDiskSpaceMB = 0
+            MinMemoryMB = 0
+        }
+        Action1Config = @{
+            OrganizationId = ""
+            PackageId = ""
+            PolicyId = ""
+            DeploymentGroup = ""
+        }
+        Metadata = @{
+            Tags = @()
+            Notes = ""
+            SourceFile = $installerFile.Name
+            OriginalPath = $installerFile.FullName
+        }
+    }
+
     # Save manifest
-    Write-ManifestFile -Manifest $manifest -Path $ManifestPath
-    
+    $manifestPath = Join-Path $packagePath "manifest.json"
+    Write-Action1Log "Creating manifest file: $manifestPath" -Level INFO
+    Write-ManifestFile -Manifest $manifest -Path $manifestPath
+
+    # Create README
+    $readmeContent = @(
+        "# $appName - Action1 Deployment Package",
+        "",
+        "## Overview",
+        "This repository contains the deployment package for $appName.",
+        "",
+        "**Publisher:** $publisher",
+        "**Version:** $appVersion",
+        "**Created:** $(Get-Date -Format 'yyyy-MM-dd')",
+        "",
+        "## Structure",
+        "- **installers/** - Application installer files",
+        "- **scripts/** - Pre/post installation scripts",
+        "- **documentation/** - Additional documentation",
+        "- **manifest.json** - Application deployment configuration",
+        "",
+        "## Installation",
+        "**Installer Type:** $installerType",
+        "**Install Switches:** $(if ($InstallSwitches) { $InstallSwitches } else { '(default)' })",
+        $(if ($installerType -eq 'msi') { "**Note:** Action1 automatically adds: $script:DefaultMsiSwitches" } else { "" }),
+        "",
+        "## Usage",
+        '```powershell',
+        "# Deploy to Action1",
+        "Deploy-Action1App -ManifestPath `"$manifestPath`"",
+        "",
+        "# Deploy update to existing application",
+        "Deploy-Action1AppUpdate -ManifestPath `"$manifestPath`"",
+        '```'
+    ) -join "`n"
+
+    $readmePath = Join-Path $packagePath "README.md"
+    Set-Content -Path $readmePath -Value $readmeContent -Force
+    Write-Action1Log "Created README file: $readmePath" -Level DEBUG
+
     # Display summary
     Write-Host "`n=== Package Summary ===" -ForegroundColor Green
-    Write-Host "Application: $($manifest.AppName) v$($manifest.Version)"
-    Write-Host "Installer: $($manifest.InstallerFileName) ($installerType)"
-    Write-Host "Install switches: $($manifest.InstallSwitches)"
+    Write-Host "Application: $appName v$appVersion"
+    Write-Host "Publisher: $publisher"
+    Write-Host "Installer: $($installerFile.Name) ($installerType)"
+    Write-Host "Install switches: $(if ($InstallSwitches) { $InstallSwitches } else { '(none - using defaults)' })"
     if ($installerType -eq 'msi') {
         Write-Host "  (Action1 will add: $script:DefaultMsiSwitches)"
     }
-    Write-Host "Detection: $($manifest.DetectionMethod.Type)"
-    Write-Host "`n✓ Package prepared successfully!" -ForegroundColor Green
-    Write-Host "Manifest saved to: $ManifestPath" -ForegroundColor Cyan
-    
-    return $manifest
+    Write-Host "Package location: $packagePath"
+    Write-Host "`nPackage prepared successfully!" -ForegroundColor Green
+    Write-Host "Manifest saved to: $manifestPath" -ForegroundColor Cyan
+
+    Write-Action1Log "Package created successfully at: $packagePath" -Level INFO
+
+    return [PSCustomObject]@{
+        Success = $true
+        PackagePath = $packagePath
+        ManifestPath = $manifestPath
+        AppName = $appName
+        Version = $appVersion
+        Publisher = $publisher
+        InstallerType = $installerType
+        Manifest = $manifest
+    }
 }
 
+# TODO: update function to prompt for app info if needed
 function Deploy-Action1App {
     <#
     .SYNOPSIS
