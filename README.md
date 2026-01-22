@@ -12,6 +12,7 @@ A structured repository for managing and packaging macOS and Windows application
 - [Current Limitations](#current-limitations)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
+- [Recent Additions](#recent-additions)
 - [Future Roadmap](#future-roadmap)
 
 ---
@@ -34,11 +35,13 @@ This repository serves as a centralized software package management system for A
 
 ### 1. Directory Structure Design
 
-**Decision**: Platform-first hierarchy (`<platform>/<application>/<version>`)
+**Decision**: Platform-first hierarchy with underscore prefix (`_<platform>/packages/<application>/<version>`)
 
-**Rationale**: 
+**Rationale**:
+- Underscore prefix groups platform folders at top of directory listings
 - Separates platform-specific build requirements and tooling
-- Allows platform-specific scripts (`mac/build.sh`) to operate efficiently
+- `packages/` subfolder cleanly separates apps from tooling (`_api/`)
+- Allows platform-specific scripts (`_mac/build.sh`) to operate efficiently
 - Simplifies permission management and CI/CD integration
 - Mirrors Action1's platform-segregated deployment model
 
@@ -52,7 +55,7 @@ This repository serves as a centralized software package management system for A
 ```bash
 # Path resolution priority:
 1. Current working directory: ./<App>/<Ver>
-2. Repository root fallback: mac/<App>/<Ver>
+2. Repository root fallback: _mac/packages/<App>/<Ver>
 3. Explicit path via -s flag
 ```
 
@@ -104,30 +107,51 @@ action1_software_repository/
 ├── README.md                     # This file
 ├── LICENSE                       # GPL-3.0
 │
-├── mac/                          # macOS platform
+├── _api/                         # Shared API documentation
+│   ├── api_logic.md              # API integration notes
+│   └── docs/                     # OpenAPI specs and examples
+│       ├── action1_openapi.json
+│       └── POST_software-version.json
+│
+├── _mac/                         # macOS platform
 │   ├── build.sh                  # Packaging script (executable)
 │   ├── dist/                     # Output directory for ZIPs (auto-created)
+│   ├── _api/                     # macOS-specific API tools
+│   │   ├── action1_app_deploy.sh # Bash-based deployment script
+│   │   ├── .env.example          # Environment template
+│   │   └── .env                  # Credentials (gitignored)
 │   │
-│   ├── VirtualBuddy/             # Application name
-│   │   ├── 2.1/                  # Version directory
-│   │   │   ├── VirtualBuddy.app  # Application bundle
-│   │   │   ├── install.sh        # Installation script
-│   │   │   ├── common.sh         # Helper functions
-│   │   │   └── [other files]
-│   │   └── templates/            # Optional: version templates
-│   │
-│   └── [OtherApp]/
-│       └── [version]/
+│   └── packages/                 # Application packages
+│       ├── UTM/
+│       │   ├── 4.7.5/
+│       │   │   ├── UTM.dmg
+│       │   │   ├── install.sh
+│       │   │   └── common.sh
+│       │   └── 5.0.0/
+│       │
+│       └── VirtualBuddy/
+│           └── 2.1/
 │
-├── windows/                      # Windows platform
-│   └── microsoft_office_365/
-│       └── 16.0.012/
-│           ├── Office.xml
-│           ├── Office.exe
-│           └── [other files]
+├── _windows/                     # Windows platform
+│   ├── _api/                     # PowerShell deployment module
+│   │   ├── Action1AppDeployment.psm1  # Main module
+│   │   ├── Action1AppDeployment.psd1  # Module manifest
+│   │   ├── README.md             # Module documentation
+│   │   ├── INSTALL.md            # Installation guide
+│   │   ├── LOGGING.md            # Logging reference
+│   │   ├── QUICKREF.md           # Quick reference
+│   │   └── FEATURES.md           # Feature documentation
+│   │
+│   ├── installers/               # Shared installer files
+│   │
+│   └── packages/                 # Application packages
+│       └── microsoft_office_365/
+│           ├── OfficeSetup.exe
+│           └── x64_enterprise_current/
+│               └── config.xml
 │
 └── templates/                    # Shared templates
-    └── mac/
+    └── _mac/
         ├── install.sh.template
         └── common.sh.template
 ```
@@ -206,16 +230,24 @@ action1_software_repository/
 
 ### Prerequisites
 
+**For macOS packaging**:
+
 - Bash shell (macOS, Linux, or WSL on Windows)
 - Write permissions in the repository directory
 - Application release files from vendor
+
+**For Windows API deployment**:
+
+- PowerShell 7.0 or higher
+- Action1 API credentials (API key and secret)
+- Application installer files (.msi, .exe)
 
 ### Building a macOS Package
 
 #### Method 1: Interactive Mode (Recommended for First-Time Users)
 
 ```bash
-cd mac
+cd _mac
 ./build.sh
 ```
 
@@ -228,13 +260,13 @@ The script will prompt you for:
 
 ```bash
 # From repository root
-mac/build.sh -a VirtualBuddy -v 2.1
+_mac/build.sh -a VirtualBuddy -v 2.1
 
 # With custom paths
-mac/build.sh -a VirtualBuddy -v 2.1 -s ./custom/path -o ./build/output
+_mac/build.sh -a VirtualBuddy -v 2.1 -s ./custom/path -o ./build/output
 
-# From within mac/ directory
-cd mac
+# From within _mac/ directory
+cd _mac
 ./build.sh -a VirtualBuddy -v 2.1
 ```
 
@@ -244,9 +276,9 @@ cd mac
 -a APP    Application name (required)
 -v VER    Version string (required)
 -s SRC    Explicit source folder path (optional)
-          Default: auto-detected from ./<App>/<Ver> or mac/<App>/<Ver>
+          Default: auto-detected from ./<App>/<Ver> or _mac/packages/<App>/<Ver>
 -o OUT    Output directory (optional)
-          Default: mac/dist
+          Default: _mac/dist
 -h        Display help message
 ```
 
@@ -256,23 +288,23 @@ cd mac
 
 ```bash
 # For macOS
-mkdir -p mac/MyApp/1.0.0
+mkdir -p _mac/packages/MyApp/1.0.0
 
 # For Windows
-mkdir -p windows/MyApp/1.0.0
+mkdir -p _windows/packages/MyApp/1.0.0
 ```
 
 #### Step 2: Prepare Installation Scripts (macOS)
 
 Option A: Copy from template
 ```bash
-cp templates/mac/install.sh mac/MyApp/1.0.0/
-cp templates/mac/common.sh mac/MyApp/1.0.0/
+cp templates/mac/install.sh _mac/packages/MyApp/1.0.0/
+cp templates/mac/common.sh _mac/packages/MyApp/1.0.0/
 ```
 
 Option B: Copy from similar application
 ```bash
-cp -r mac/VirtualBuddy/2.1/*.sh mac/MyApp/1.0.0/
+cp -r _mac/packages/VirtualBuddy/2.1/*.sh _mac/packages/MyApp/1.0.0/
 ```
 
 #### Step 3: Customize install.sh
@@ -286,28 +318,28 @@ Edit the script to configure:
 **Critical**: Ensure LF line endings (not CRLF)
 ```bash
 # Check line endings
-file mac/MyApp/1.0.0/install.sh
+file _mac/packages/MyApp/1.0.0/install.sh
 
 # Convert if needed (macOS/Linux)
-dos2unix mac/MyApp/1.0.0/install.sh
+dos2unix _mac/packages/MyApp/1.0.0/install.sh
 ```
 
 #### Step 4: Add Application Files
 
 ```bash
 # Copy vendor-provided files
-cp /path/to/MyApp.dmg mac/MyApp/1.0.0/
+cp /path/to/MyApp.dmg _mac/packages/MyApp/1.0.0/
 # or
-cp -r /path/to/MyApp.app mac/MyApp/1.0.0/
+cp -r /path/to/MyApp.app _mac/packages/MyApp/1.0.0/
 ```
 
 #### Step 5: Build Package
 
 ```bash
-mac/build.sh -a MyApp -v 1.0.0
+_mac/build.sh -a MyApp -v 1.0.0
 ```
 
-Output: `mac/dist/MyApp-1.0.0.zip`
+Output: `_mac/dist/MyApp-1.0.0.zip`
 
 #### Step 6: Upload to Action1
 
@@ -325,35 +357,90 @@ Output: `mac/dist/MyApp-1.0.0.zip`
    - Reboot requirements
 7. Save and deploy to endpoints
 
+### Deploying a Windows Application (PowerShell Module)
+
+The Windows PowerShell module provides direct API integration for deploying applications.
+
+#### Step 1: Import the Module
+
+```powershell
+Import-Module ./_windows/_api/Action1AppDeployment.psm1
+```
+
+#### Step 2: Configure API Credentials
+
+```powershell
+# Set credentials for current session
+Set-Action1ApiCredentials -Region "NorthAmerica" -ApiKey "your-api-key" -Secret "your-secret"
+
+# Verify connection
+Test-Action1Connection
+```
+
+#### Step 3: Create App Repository Structure
+
+```powershell
+New-Action1AppRepo -AppName "MyApp" -Path "./_windows/packages" -IncludeExamples
+```
+
+This creates:
+
+```text
+_windows/packages/MyApp/
+├── installers/          # Place installer here
+├── scripts/             # Optional pre/post install scripts
+├── documentation/
+├── manifest.json        # Configuration file
+└── README.md
+```
+
+#### Step 4: Add Installer and Configure Manifest
+
+Place your installer in the `installers/` folder, then run:
+
+```powershell
+# Interactive mode - auto-detects installer metadata
+New-Action1AppPackage -ManifestPath "./_windows/packages/MyApp/manifest.json" -Interactive
+```
+
+The module will automatically extract:
+
+- MSI product information (name, version, publisher)
+- Digital signature details
+- Inno Setup/NSIS metadata
+
+#### Step 5: Deploy to Action1
+
+```powershell
+# Deploy new application
+Deploy-Action1App -ManifestPath "./_windows/packages/MyApp/manifest.json"
+
+# Or preview first with -WhatIf
+Deploy-Action1App -ManifestPath "./_windows/packages/MyApp/manifest.json" -WhatIf
+```
+
+#### Step 6: Update Existing Applications
+
+```powershell
+# Update version and redeploy
+Deploy-Action1AppUpdate -ManifestPath "./_windows/packages/MyApp/manifest.json"
+```
+
 ---
 
 ## Current Limitations
 
-### 1. Platform Coverage
+### 1. macOS API Integration
 
-**Limitation**: Windows build automation not implemented
+**Limitation**: macOS API integration is bash-based and less feature-rich than Windows
 
-**Impact**: Windows packages must be manually zipped
+**Impact**: Some advanced features (automation cloning, endpoint groups) not available on macOS
 
-**Workaround**: 
-```bash
-cd windows/MyApp/1.0.0
-zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
-```
+**Workaround**: Use the Action1 web console for advanced operations, or the Windows PowerShell module
 
-**Status**: Tracked for future development
+**Status**: macOS bash script (`_mac/_api/action1_app_deploy.sh`) provides basic deployment functionality
 
-### 2. API Integration
-
-**Limitation**: No direct Action1 API integration
-
-**Impact**: Manual upload required via web console
-
-**Workaround**: Use Action1 console for uploads
-
-**Planned**: Automated upload via Action1 API using OAuth2 authentication
-
-### 3. Architecture Detection
+### 2. Architecture Detection
 
 **Limitation**: No automatic CPU architecture detection for macOS
 
@@ -361,7 +448,7 @@ zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
 
 **Workaround**: Use universal binaries when available, or prepare separate packages
 
-### 4. Version Conflict Resolution
+### 3. Version Conflict Resolution
 
 **Limitation**: Build script does not detect version conflicts in Action1 repository
 
@@ -369,7 +456,7 @@ zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
 
 **Workaround**: Check Action1 console before uploading
 
-### 5. Dependency Management
+### 4. Dependency Management
 
 **Limitation**: No automatic dependency resolution or bundling
 
@@ -380,7 +467,7 @@ zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
 - Document dependency requirements in install.sh comments
 - Use Action1 "Additional Actions" for pre/post-install scripts
 
-### 6. Large File Handling
+### 5. Large File Handling
 
 **Limitation**: No support for packages >5GB
 
@@ -388,7 +475,7 @@ zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
 
 **Workaround**: Compress aggressively, split into multiple packages, or use post-install download scripts
 
-### 7. Network Mount Points
+### 6. Network Mount Points
 
 **Limitation**: Build script requires local filesystem access
 
@@ -396,7 +483,7 @@ zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
 
 **Workaround**: Copy files to local directory first
 
-### 8. Parallel Builds
+### 7. Parallel Builds
 
 **Limitation**: No concurrent build support
 
@@ -404,7 +491,7 @@ zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
 
 **Status**: Not prioritized (builds are typically fast)
 
-### 9. Rollback Mechanism
+### 8. Rollback Mechanism
 
 **Limitation**: No built-in version rollback
 
@@ -412,7 +499,7 @@ zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
 
 **Workaround**: Maintain all version directories in repository
 
-### 10. Testing Framework
+### 9. Testing Framework
 
 **Limitation**: No automated testing of generated packages
 
@@ -453,8 +540,8 @@ zip -r ../../../MyApp-1.0.0.zip . -x "local_mnt/*" -x ".DS_Store"
 
 2. **Executable Permissions**: Ensure scripts are executable
    ```bash
-   chmod +x mac/build.sh
-   chmod +x mac/MyApp/1.0.0/install.sh
+   chmod +x _mac/build.sh
+   chmod +x _mac/packages/MyApp/1.0.0/install.sh
    ```
 
 3. **Script Validation**: Test scripts on macOS before committing
@@ -521,10 +608,10 @@ Error: Could not find version directory for VirtualBuddy 2.1
 **Solutions**:
 ```bash
 # Check exact directory name
-ls mac/
+ls _mac/
 
 # Use explicit path
-mac/build.sh -a VirtualBuddy -v 2.1 -s ./mac/VirtualBuddy/2.1
+_mac/build.sh -a VirtualBuddy -v 2.1 -s ./_mac/packages/VirtualBuddy/2.1
 
 # Use tab-completion in interactive mode
 cd mac && ./build.sh
@@ -539,7 +626,7 @@ bash: ./build.sh: Permission denied
 
 **Solution**:
 ```bash
-chmod +x mac/build.sh
+chmod +x _mac/build.sh
 ./build.sh
 ```
 
@@ -552,15 +639,15 @@ chmod +x mac/build.sh
 **Solution**:
 ```bash
 # Check line endings
-file mac/MyApp/1.0.0/install.sh
+file _mac/packages/MyApp/1.0.0/install.sh
 
 # Convert to LF
-dos2unix mac/MyApp/1.0.0/install.sh
+dos2unix _mac/packages/MyApp/1.0.0/install.sh
 # or
-sed -i 's/\r$//' mac/MyApp/1.0.0/install.sh
+sed -i 's/\r$//' _mac/packages/MyApp/1.0.0/install.sh
 
 # Rebuild package
-mac/build.sh -a MyApp -v 1.0.0
+_mac/build.sh -a MyApp -v 1.0.0
 ```
 
 #### Issue: Duplicate paths detected
@@ -570,7 +657,7 @@ mac/build.sh -a MyApp -v 1.0.0
 Warning: Multiple candidate paths found
 ```
 
-**Cause**: Running from `mac/` directory creates duplicate path resolution
+**Cause**: Running from `_mac/` directory creates duplicate path resolution
 
 **Solution**: Recent script versions deduplicate automatically; update build.sh if seeing this error
 
@@ -584,7 +671,7 @@ Warning: Multiple candidate paths found
 **Validation**:
 ```bash
 # Check ZIP structure
-unzip -l mac/dist/MyApp-1.0.0.zip | head -20
+unzip -l _mac/dist/MyApp-1.0.0.zip | head -20
 
 # Should show install.sh at root level:
 # Archive:  MyApp-1.0.0.zip
@@ -628,7 +715,7 @@ set -x  # Print commands as they execute
 
 Or run with bash debug mode:
 ```bash
-bash -x mac/build.sh -a MyApp -v 1.0.0
+bash -x _mac/build.sh -a MyApp -v 1.0.0
 ```
 
 ### Getting Help
@@ -641,38 +728,75 @@ bash -x mac/build.sh -a MyApp -v 1.0.0
 
 ---
 
+## Recent Additions
+
+### Windows PowerShell Module (Action1AppDeployment)
+
+A comprehensive PowerShell module for Windows deployments is now available at `_windows/_api/`. See the [module README](_windows/_api/README.md) for full documentation.
+
+**Key Features**:
+
+- **Full API Integration**: Deploy apps directly to Action1 via OAuth2 authentication
+- **Installer Metadata Extraction**: Automatically detect MSI properties, digital signatures, Inno Setup, and NSIS metadata
+- **Smart Defaults**: Auto-detection of installer types with appropriate silent switches
+- **Progress Tracking**: Real-time progress bars for chunked file uploads
+- **Comprehensive Logging**: Five log levels (TRACE, DEBUG, INFO, WARN, ERROR)
+- **Organization Management**: Query organizations, endpoint groups, and automations
+- **Automation Cloning**: Clone existing automations to deploy new versions
+
+**Quick Start**:
+
+```powershell
+# Import module
+Import-Module ./_windows/_api/Action1AppDeployment.psm1
+
+# Set credentials
+Set-Action1ApiCredentials -Region "NorthAmerica" -ApiKey "your-key" -Secret "your-secret"
+
+# Create app repository structure
+New-Action1AppRepo -AppName "7-Zip" -Path "C:\Apps" -IncludeExamples
+
+# Package and deploy
+New-Action1AppPackage -ManifestPath ".\7-Zip\manifest.json" -Interactive
+Deploy-Action1App -ManifestPath ".\7-Zip\manifest.json"
+```
+
+**Available Functions**:
+
+| Function | Description |
+|----------|-------------|
+| `Set-Action1ApiCredentials` | Configure API authentication |
+| `Test-Action1Connection` | Verify API connectivity |
+| `New-Action1AppRepo` | Create app repository structure |
+| `New-Action1AppPackage` | Prepare app for deployment (with metadata extraction) |
+| `Deploy-Action1App` | Deploy new application |
+| `Deploy-Action1AppUpdate` | Update existing application |
+| `Get-Action1App` | Query deployed applications |
+| `Remove-Action1App` | Remove application from Action1 |
+| `Get-Action1Organization` | List organizations |
+| `Get-Action1EndpointGroup` | Query endpoint groups |
+| `New-Action1EndpointGroup` | Create endpoint groups |
+| `Get-Action1Automation` | Query automations |
+| `Copy-Action1Automation` | Clone existing automations |
+
+---
+
 ## Future Roadmap
 
 ### Planned Enhancements
 
-#### 1. Action1 API Integration (High Priority)
+#### 1. macOS API Parity (High Priority)
 
-**Goal**: Automate package upload directly from build script
+**Goal**: Bring macOS bash script to feature parity with Windows PowerShell module
 
-**Implementation Plan**:
-```bash
-mac/build.sh -a MyApp -v 1.0.0 --upload --api-key $ACTION1_API_KEY
-```
-
-**Dependencies**:
-- OAuth2 authentication implementation
-- Action1 API credentials management
-- Error handling for API failures
+**Features**:
+- Automation cloning support
+- Endpoint group management
+- Enhanced progress tracking
 
 **Timeline**: Q2 2026
 
-#### 2. Windows Build Script (High Priority)
-
-**Goal**: Parity with macOS build tooling
-
-**Features**:
-- PowerShell-based build script
-- MSI/EXE detection and packaging
-- Silent install parameter validation
-
-**Timeline**: Q1 2026
-
-#### 3. CI/CD Integration (Medium Priority)
+#### 2. CI/CD Integration (Medium Priority)
 
 **Goal**: Automated builds on commit/tag
 
@@ -687,7 +811,7 @@ mac/build.sh -a MyApp -v 1.0.0 --upload --api-key $ACTION1_API_KEY
 on:
   push:
     paths:
-      - 'mac/**'
+      - '_mac/**'
 jobs:
   build:
     runs-on: macos-latest
@@ -695,14 +819,14 @@ jobs:
       - uses: actions/checkout@v3
       - name: Build packages
         run: |
-          for app in mac/*/; do
-            mac/build.sh -a $(basename $app) -v $(ls $app | sort -V | tail -1)
+          for app in _mac/*/; do
+            _mac/build.sh -a $(basename $app) -v $(ls $app | sort -V | tail -1)
           done
 ```
 
 **Timeline**: Q3 2026
 
-#### 4. Package Validation Framework (Medium Priority)
+#### 3. Package Validation Framework (Medium Priority)
 
 **Goal**: Automated quality checks before deployment
 
@@ -715,7 +839,7 @@ jobs:
 
 **Timeline**: Q3 2026
 
-#### 5. Version Management Tools (Low Priority)
+#### 4. Version Management Tools (Low Priority)
 
 **Features**:
 - Automated version bumping
@@ -724,7 +848,7 @@ jobs:
 
 **Timeline**: Q4 2026
 
-#### 6. Multi-Architecture Support (Low Priority)
+#### 5. Multi-Architecture Support (Low Priority)
 
 **Goal**: Automated handling of Intel/Apple Silicon variants
 
@@ -755,12 +879,21 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 ## Changelog
 
-### [Unreleased]
-- Enhanced README documentation
-- Technical decisions documentation
-- Comprehensive troubleshooting guide
+### [2.0.0] - January 2026
+
+- **Folder Structure Redesign**: Renamed `mac/` to `_mac/` and `windows/` to `_windows/` with `packages/` subfolders
+- **Windows PowerShell Module**: Full-featured `Action1AppDeployment` module with API integration
+  - OAuth2 authentication with multi-region support (North America, Europe, Australia)
+  - Installer metadata extraction (MSI, digital signatures, Inno Setup, NSIS)
+  - Chunked file uploads with progress tracking
+  - Organization, endpoint group, and automation management
+  - Automation cloning for version deployments
+- **API Documentation**: Added `_api/` folder with OpenAPI specs and integration notes
+- **macOS API Script**: Added `_mac/_api/action1_app_deploy.sh` for bash-based deployments
+- **Comprehensive Logging**: Five log levels with file output support
 
 ### [1.0.0] - Initial Release
+
 - macOS build script with interactive and non-interactive modes
 - Template directory structure
 - Basic .gitignore configuration
