@@ -948,6 +948,306 @@ function Invoke-Action1ApiRequest {
     }
 }
 
+function Format-NestedObject {
+    <#
+    .SYNOPSIS
+        Formats a nested object or array into a readable indented string.
+
+    .DESCRIPTION
+        Helper function that converts complex nested objects into human-readable
+        indented text format for display purposes.
+
+    .PARAMETER Object
+        The object to format.
+
+    .PARAMETER Indent
+        The current indentation level (used for recursion).
+
+    .PARAMETER IndentString
+        The string to use for each indentation level.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        $Object,
+
+        [Parameter()]
+        [int]$Indent = 0,
+
+        [Parameter()]
+        [string]$IndentString = '    '
+    )
+
+    if ($null -eq $Object) {
+        return ''
+    }
+
+    $prefix = $IndentString * $Indent
+    $lines = @()
+
+    # Handle arrays
+    if ($Object -is [System.Collections.IEnumerable] -and $Object -isnot [string] -and $Object -isnot [System.Collections.IDictionary]) {
+        $index = 0
+        foreach ($item in $Object) {
+            if ($item -is [PSCustomObject] -or $item -is [System.Collections.IDictionary]) {
+                $lines += "${prefix}[$index]:"
+                $lines += Format-NestedObject -Object $item -Indent ($Indent + 1) -IndentString $IndentString
+            }
+            else {
+                $lines += "${prefix}[$index]: $item"
+            }
+            $index++
+        }
+    }
+    # Handle PSCustomObject or hashtable
+    elseif ($Object -is [PSCustomObject] -or $Object -is [System.Collections.IDictionary]) {
+        $props = if ($Object -is [PSCustomObject]) { $Object.PSObject.Properties } else { $Object.GetEnumerator() }
+        foreach ($prop in $props) {
+            $name = if ($Object -is [PSCustomObject]) { $prop.Name } else { $prop.Key }
+            $value = if ($Object -is [PSCustomObject]) { $prop.Value } else { $prop.Value }
+
+            # Skip very long script content for cleaner display
+            if ($name -match 'script_text|script_content' -and $value -is [string] -and $value.Length -gt 100) {
+                $lines += "${prefix}${name}: <script content, $($value.Length) chars>"
+                continue
+            }
+
+            if ($null -eq $value -or $value -eq '') {
+                $lines += "${prefix}${name}: "
+            }
+            elseif ($value -is [PSCustomObject] -or $value -is [System.Collections.IDictionary]) {
+                $lines += "${prefix}${name}:"
+                $lines += Format-NestedObject -Object $value -Indent ($Indent + 1) -IndentString $IndentString
+            }
+            elseif ($value -is [System.Collections.IEnumerable] -and $value -isnot [string]) {
+                $lines += "${prefix}${name}:"
+                $lines += Format-NestedObject -Object $value -Indent ($Indent + 1) -IndentString $IndentString
+            }
+            else {
+                $lines += "${prefix}${name}: $value"
+            }
+        }
+    }
+    else {
+        $lines += "${prefix}$Object"
+    }
+
+    return $lines -join "`n"
+}
+
+function Expand-NestedJsonAttributes {
+    <#
+    .SYNOPSIS
+        Expands nested JSON attributes into flattened, user-friendly properties.
+
+    .DESCRIPTION
+        Takes an API response object and flattens nested structures like file_name
+        (which contains platform-keyed objects) into readable properties.
+        This function is designed to be reusable across multiple API response types.
+
+    .PARAMETER InputObject
+        The PSObject to expand. Can be a single object or an array.
+
+    .PARAMETER ExpandFileNames
+        If specified, expands the file_name property which contains platform-keyed objects.
+
+    .PARAMETER FormatNested
+        If specified, formats nested objects (like additional_actions) into readable indented strings.
+
+    .EXAMPLE
+        $version | Expand-NestedJsonAttributes -ExpandFileNames
+        # Expands file_name: {Windows32: {name: "app.exe"}} into Files array
+
+    .EXAMPLE
+        Get-Action1App | Expand-NestedJsonAttributes -ExpandFileNames -FormatNested
+        # Processes objects and formats nested attributes readably
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [AllowNull()]
+        [object]$InputObject,
+
+        [Parameter()]
+        [switch]$ExpandFileNames,
+
+        [Parameter()]
+        [switch]$FormatNested
+    )
+
+    process {
+        if ($null -eq $InputObject) {
+            return $null
+        }
+
+        # Handle arrays by processing each item
+        if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string] -and $InputObject -isnot [System.Collections.IDictionary]) {
+            foreach ($item in $InputObject) {
+                Expand-NestedJsonAttributes -InputObject $item -ExpandFileNames:$ExpandFileNames -FormatNested:$FormatNested
+            }
+            return
+        }
+
+        # Clone the object to avoid modifying the original
+        $expanded = [PSCustomObject]@{}
+
+        foreach ($prop in $InputObject.PSObject.Properties) {
+            $propName = $prop.Name
+            $propValue = $prop.Value
+
+            # Handle file_name expansion
+            if ($ExpandFileNames -and $propName -eq 'file_name' -and $propValue -is [PSCustomObject]) {
+                # Extract files from platform-keyed structure
+                $files = @()
+                foreach ($platformProp in $propValue.PSObject.Properties) {
+                    $platform = $platformProp.Name
+                    $fileInfo = $platformProp.Value
+
+                    if ($fileInfo -is [PSCustomObject]) {
+                        $files += [PSCustomObject]@{
+                            Platform = $platform
+                            FileName = $fileInfo.name
+                            FileType = $fileInfo.type
+                        }
+                    }
+                }
+
+                # Add flattened Files array (formatted if requested)
+                if ($FormatNested) {
+                    $formattedFiles = Format-NestedObject -Object $files
+                    $expanded | Add-Member -NotePropertyName 'Files' -NotePropertyValue $formattedFiles
+                }
+                else {
+                    $expanded | Add-Member -NotePropertyName 'Files' -NotePropertyValue $files
+                }
+
+                # Add convenience properties (always plural for consistency)
+                if ($files.Count -eq 1) {
+                    $expanded | Add-Member -NotePropertyName 'FileNames' -NotePropertyValue $files[0].FileName
+                    $expanded | Add-Member -NotePropertyName 'FileTypes' -NotePropertyValue $files[0].FileType
+                    $expanded | Add-Member -NotePropertyName 'Platforms' -NotePropertyValue $files[0].Platform
+                }
+                elseif ($files.Count -gt 1) {
+                    # For multi-platform, create arrays/summary strings
+                    $expanded | Add-Member -NotePropertyName 'FileNames' -NotePropertyValue ($files.FileName -join '; ')
+                    $expanded | Add-Member -NotePropertyName 'FileTypes' -NotePropertyValue (($files.FileType | Select-Object -Unique) -join ', ')
+                    $expanded | Add-Member -NotePropertyName 'Platforms' -NotePropertyValue ($files.Platform -join ', ')
+                }
+            }
+            # Handle binary_id similarly (it has the same platform-keyed structure)
+            elseif ($ExpandFileNames -and $propName -eq 'binary_id' -and $propValue -is [PSCustomObject]) {
+                $binaryIds = @()
+                foreach ($platformProp in $propValue.PSObject.Properties) {
+                    $binaryIds += [PSCustomObject]@{
+                        Platform = $platformProp.Name
+                        BinaryId = $platformProp.Value
+                    }
+                }
+                if ($FormatNested) {
+                    $formattedBinaryIds = Format-NestedObject -Object $binaryIds
+                    $expanded | Add-Member -NotePropertyName 'BinaryIds' -NotePropertyValue $formattedBinaryIds
+                }
+                else {
+                    $expanded | Add-Member -NotePropertyName 'BinaryIds' -NotePropertyValue $binaryIds
+                }
+            }
+            # Handle additional_actions with friendly formatting
+            elseif ($propName -eq 'additional_actions' -and $propValue -is [System.Collections.IEnumerable]) {
+                # Create expanded actions with resolved names
+                $expandedActions = @()
+                foreach ($action in $propValue) {
+                    # Try to resolve a friendly name from params
+                    $friendlyName = $action.name
+                    if ($action.params) {
+                        if ($action.params.display_summary) {
+                            $friendlyName = "$($action.name): $($action.params.display_summary)"
+                        }
+                        elseif ($action.params.run_script_id) {
+                            # Extract name from run_script_id (e.g., "Check_System_Requirements_1768639966107" -> "Check System Requirements")
+                            $scriptName = $action.params.run_script_id -replace '_\d+$', '' -replace '_', ' '
+                            $friendlyName = "$($action.name): $scriptName"
+                        }
+                    }
+
+                    # Build a cleaner action object
+                    $cleanAction = [PSCustomObject]@{
+                        Name       = $friendlyName
+                        When       = $action.when
+                        Priority   = $action.priority
+                        TemplateId = $action.template_id
+                        Id         = $action.id
+                    }
+
+                    # Add script info if available
+                    if ($action.params.run_script_language) {
+                        $cleanAction | Add-Member -NotePropertyName 'Language' -NotePropertyValue $action.params.run_script_language
+                    }
+                    if ($action.params.platform) {
+                        $cleanAction | Add-Member -NotePropertyName 'Platform' -NotePropertyValue $action.params.platform
+                    }
+
+                    $expandedActions += $cleanAction
+                }
+
+                if ($FormatNested) {
+                    # Format as readable string
+                    $formattedOutput = Format-NestedObject -Object $expandedActions
+                    $expanded | Add-Member -NotePropertyName 'AdditionalActions' -NotePropertyValue $formattedOutput
+                }
+                else {
+                    $expanded | Add-Member -NotePropertyName 'AdditionalActions' -NotePropertyValue $expandedActions
+                }
+            }
+            # Handle scoped_approvals with formatting
+            elseif ($FormatNested -and $propName -eq 'scoped_approvals' -and $propValue -is [System.Collections.IEnumerable]) {
+                $formattedOutput = Format-NestedObject -Object $propValue
+                $expanded | Add-Member -NotePropertyName 'ScopedApprovals' -NotePropertyValue $formattedOutput
+            }
+            # Handle arrays of simple values (strings, numbers) - join them nicely
+            elseif ($propValue -is [System.Collections.IEnumerable] -and $propValue -isnot [string]) {
+                # Check if it's a simple array (all items are primitives)
+                $isSimpleArray = $true
+                $hasComplexItems = $false
+                foreach ($item in $propValue) {
+                    if ($item -is [PSCustomObject] -or ($item -is [System.Collections.IEnumerable] -and $item -isnot [string])) {
+                        $hasComplexItems = $true
+                        $isSimpleArray = $false
+                        break
+                    }
+                }
+
+                if ($isSimpleArray) {
+                    # Simple array - join as comma-separated string for readability
+                    $joined = ($propValue | ForEach-Object { "$_" }) -join ', '
+                    $expanded | Add-Member -NotePropertyName $propName -NotePropertyValue $joined
+                }
+                elseif ($FormatNested -and $hasComplexItems) {
+                    # Complex array with nested objects - format nicely
+                    $formattedOutput = Format-NestedObject -Object $propValue
+                    $expanded | Add-Member -NotePropertyName $propName -NotePropertyValue $formattedOutput
+                }
+                else {
+                    # Keep as-is
+                    $expanded | Add-Member -NotePropertyName $propName -NotePropertyValue $propValue
+                }
+            }
+            # Handle other PSCustomObjects with FormatNested
+            elseif ($FormatNested -and $propValue -is [PSCustomObject]) {
+                # Format complex nested objects
+                $formattedOutput = Format-NestedObject -Object $propValue
+                $expanded | Add-Member -NotePropertyName $propName -NotePropertyValue $formattedOutput
+            }
+            else {
+                # Copy other properties as-is
+                $expanded | Add-Member -NotePropertyName $propName -NotePropertyValue $propValue
+            }
+        }
+
+        return $expanded
+    }
+}
+
 function Read-ManifestFile {
     [CmdletBinding()]
     param(
@@ -1699,7 +1999,7 @@ function Set-Action1ApiCredentials {
         Write-Action1Log "Saving credentials to profile" -Level INFO
 
         $profilePath = if ($IsWindows -or $PSVersionTable.PSVersion.Major -lt 6) {
-            "$env:LOCALAPPDATA\Action1AppDeployment"
+            "$env:LOCALAPPDATA\Action1.Tools"
         } else {
             "$HOME/.action1"
         }
@@ -1732,6 +2032,195 @@ function Set-Action1ApiCredentials {
     Write-Host "`nAction1 API credentials configured successfully." -ForegroundColor Green
     Write-Host "Region: $Region" -ForegroundColor Cyan
     Write-Host "API Endpoint: $($script:Action1BaseUri)" -ForegroundColor Cyan
+}
+
+function Get-Action1ApiCredentials {
+    <#
+    .SYNOPSIS
+        Retrieves the current Action1 API credentials and validates permissions.
+
+    .DESCRIPTION
+        Returns information about the currently configured API credentials including
+        region, endpoint, and token status. Optionally validates the credentials
+        by making an API call to check accessible organizations and permissions.
+
+    .PARAMETER TestConnection
+        If specified, makes an API call to validate credentials and check permissions.
+
+    .PARAMETER ShowSecret
+        If specified, includes the client secret in the output (masked by default).
+
+    .EXAMPLE
+        Get-Action1ApiCredentials
+        # Returns current credential info without API validation
+
+    .EXAMPLE
+        Get-Action1ApiCredentials -TestConnection
+        # Returns credential info and validates by checking accessible organizations
+
+    .EXAMPLE
+        Get-Action1ApiCredentials -ShowSecret
+        # Includes the client secret in the output
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [switch]$TestConnection,
+
+        [Parameter()]
+        [switch]$ShowSecret
+    )
+
+    Write-Action1Log "Retrieving Action1 API credentials" -Level INFO
+
+    # Check if credentials are configured
+    $isConfigured = $null -ne $script:Action1ClientId -and $null -ne $script:Action1ClientSecret
+
+    if (-not $isConfigured) {
+        Write-Action1Log "No credentials configured" -Level WARN
+        Write-Host "No Action1 API credentials configured." -ForegroundColor Yellow
+        Write-Host "Use Set-Action1ApiCredentials to configure." -ForegroundColor Cyan
+        return [PSCustomObject]@{
+            Configured     = $false
+            ClientId       = $null
+            Region         = $null
+            Endpoint       = $null
+            TokenStatus    = 'Not Available'
+            Organizations  = @()
+            Permissions    = @()
+        }
+    }
+
+    # Build credential info object
+    $credInfo = [PSCustomObject]@{
+        Configured     = $true
+        ClientId       = $script:Action1ClientId
+        ClientSecret   = if ($ShowSecret) { $script:Action1ClientSecret } else { '********' }
+        Region         = $script:Action1Region
+        Endpoint       = $script:Action1BaseUri
+        TokenStatus    = 'Unknown'
+        TokenExpiry    = $null
+        Organizations  = @()
+        Permissions    = @()
+    }
+
+    # Check token status
+    if ($script:Action1AccessToken) {
+        if ($script:Action1TokenExpiry -and (Get-Date) -lt $script:Action1TokenExpiry) {
+            $credInfo.TokenStatus = 'Valid'
+            $credInfo.TokenExpiry = $script:Action1TokenExpiry
+        }
+        else {
+            $credInfo.TokenStatus = 'Expired'
+            $credInfo.TokenExpiry = $script:Action1TokenExpiry
+        }
+    }
+    else {
+        $credInfo.TokenStatus = 'Not Acquired'
+    }
+
+    Write-Action1Log "Credentials configured for region: $($script:Action1Region)" -Level DEBUG
+
+    # If TestConnection requested, validate by calling API
+    if ($TestConnection) {
+        Write-Action1Log "Testing connection and checking permissions..." -Level INFO
+        Write-Host "`nValidating credentials..." -ForegroundColor Cyan
+
+        try {
+            # Get organizations to validate credentials and check access
+            $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
+            $orgs = if ($orgsResponse.items) { @($orgsResponse.items) } else { @($orgsResponse) }
+
+            $credInfo.Organizations = $orgs | ForEach-Object {
+                [PSCustomObject]@{
+                    Id   = $_.id
+                    Name = $_.name
+                    Type = $_.type
+                }
+            }
+
+            # Update token status after successful call
+            $credInfo.TokenStatus = 'Valid'
+            $credInfo.TokenExpiry = $script:Action1TokenExpiry
+
+            # Determine permissions based on accessible resources
+            $permissions = @()
+
+            # Check organizations access
+            if ($orgs.Count -gt 0) {
+                $permissions += 'Organizations:Read'
+            }
+
+            # Try to check software repository access (use first org or 'all')
+            $testOrgId = if ($orgs.Count -gt 0) { $orgs[0].id } else { 'all' }
+            try {
+                $null = Invoke-Action1ApiRequest `
+                    -Endpoint "software-repository/$testOrgId`?limit=1" `
+                    -Method GET
+                $permissions += 'SoftwareRepository:Read'
+                Write-Action1Log "Software repository access confirmed" -Level DEBUG
+            }
+            catch {
+                Write-Action1Log "No software repository read access" -Level DEBUG
+            }
+
+            # Try to check automations access
+            try {
+                $null = Invoke-Action1ApiRequest `
+                    -Endpoint "automations/$testOrgId`?limit=1" `
+                    -Method GET
+                $permissions += 'Automations:Read'
+                Write-Action1Log "Automations access confirmed" -Level DEBUG
+            }
+            catch {
+                Write-Action1Log "No automations read access" -Level DEBUG
+            }
+
+            # Try to check endpoint groups access
+            try {
+                $null = Invoke-Action1ApiRequest `
+                    -Endpoint "endpointgroups/$testOrgId`?limit=1" `
+                    -Method GET
+                $permissions += 'EndpointGroups:Read'
+                Write-Action1Log "Endpoint groups access confirmed" -Level DEBUG
+            }
+            catch {
+                Write-Action1Log "No endpoint groups read access" -Level DEBUG
+            }
+
+            $credInfo.Permissions = $permissions
+
+            Write-Host "`n✓ Credentials validated successfully" -ForegroundColor Green
+            Write-Host "`nAccessible Organizations:" -ForegroundColor Cyan
+            foreach ($org in $credInfo.Organizations) {
+                Write-Host "  - $($org.Name) ($($org.Id))" -ForegroundColor White
+            }
+
+            Write-Host "`nDetected Permissions:" -ForegroundColor Cyan
+            foreach ($perm in $permissions) {
+                Write-Host "  ✓ $perm" -ForegroundColor Green
+            }
+        }
+        catch {
+            Write-Action1Log "Failed to validate credentials" -Level ERROR -ErrorRecord $_
+            Write-Host "`n✗ Failed to validate credentials: $($_.Exception.Message)" -ForegroundColor Red
+            $credInfo.TokenStatus = 'Invalid'
+        }
+    }
+    else {
+        # Display basic info without API call
+        Write-Host "`nAction1 API Credentials:" -ForegroundColor Cyan
+        Write-Host "  Client ID:  $($credInfo.ClientId)" -ForegroundColor White
+        Write-Host "  Region:     $($credInfo.Region)" -ForegroundColor White
+        Write-Host "  Endpoint:   $($credInfo.Endpoint)" -ForegroundColor White
+        Write-Host "  Token:      $($credInfo.TokenStatus)" -ForegroundColor $(if ($credInfo.TokenStatus -eq 'Valid') { 'Green' } elseif ($credInfo.TokenStatus -eq 'Expired') { 'Yellow' } else { 'Gray' })
+        if ($credInfo.TokenExpiry) {
+            Write-Host "  Expires:    $($credInfo.TokenExpiry)" -ForegroundColor Gray
+        }
+        Write-Host "`nUse -TestConnection to validate credentials and check permissions." -ForegroundColor DarkGray
+    }
+
+    return $credInfo
 }
 
 function Test-Action1Connection {
@@ -2582,7 +3071,7 @@ function Get-Action1App {
             Write-Action1Log "Fetching available organizations..." -Level INFO
             $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
 
-            $orgs = if ($orgsResponse.items) { $orgsResponse.items } else { @($orgsResponse) }
+            $orgs = if ($orgsResponse.items) { @($orgsResponse.items) } else { @($orgsResponse) }
 
             if ($orgs.Count -eq 0) {
                 throw "No organizations found."
@@ -2635,17 +3124,18 @@ function Get-Action1App {
             $version = Invoke-Action1ApiRequest `
                 -Endpoint "software-repository/$OrganizationId/$PackageId/versions/$VersionId" `
                 -Method GET
-            return $version
+            return ($version | Expand-NestedJsonAttributes -ExpandFileNames -FormatNested)
         }
 
         # If specific package requested (list versions)
         if ($PackageId) {
+            # Fetch package with all fields to get embedded versions array
             $response = Invoke-Action1ApiRequest `
-                -Endpoint "software-repository/$OrganizationId/$PackageId/versions?limit=100" `
+                -Endpoint "software-repository/$OrganizationId/$PackageId?fields=*" `
                 -Method GET
 
-            $versions = if ($response.items) { $response.items } elseif ($response.type -eq 'Version') { @($response) } else { @() }
-            return $versions
+            $versions = if ($response.versions) { @($response.versions) } else { @() }
+            return ($versions | Expand-NestedJsonAttributes -ExpandFileNames -FormatNested)
         }
 
         # Get repos list
@@ -2653,7 +3143,7 @@ function Get-Action1App {
             -Endpoint "software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100" `
             -Method GET
 
-        $repos = if ($response.items) { $response.items } else { @($response) }
+        $repos = if ($response.items) { @($response.items) } else { @($response) }
 
         if ($Name) {
             $repos = $repos | Where-Object { $_.name -like "*$Name*" }
@@ -2693,19 +3183,20 @@ function Get-Action1App {
         $selectedRepo = $repos[$repoNum - 1]
         Write-Host "Selected repo: $($selectedRepo.name)" -ForegroundColor Green
 
-        # Fetch versions for selected repo
+        # Fetch package with all fields to get embedded versions array
         Write-Action1Log "Fetching versions for $($selectedRepo.name)..." -Level INFO
-        $versionsResponse = Invoke-Action1ApiRequest `
-            -Endpoint "software-repository/$OrganizationId/$($selectedRepo.id)/versions?limit=100" `
+        $packageResponse = Invoke-Action1ApiRequest `
+            -Endpoint "software-repository/$OrganizationId/$($selectedRepo.id)?fields=*" `
             -Method GET
 
-        $versions = if ($versionsResponse.items) {
-            $versionsResponse.items
-        } elseif ($versionsResponse.type -eq 'Version') {
-            @($versionsResponse)
+        # Versions are embedded in the package response when using fields=*
+        $versions = if ($packageResponse.versions) {
+            @($packageResponse.versions)  # Force array in case of single item
         } else {
             @()
         }
+
+        Write-Action1Log "Found $($versions.Count) version(s)" -Level DEBUG
 
         if ($versions.Count -eq 0) {
             Write-Host "`nNo versions found for this repository." -ForegroundColor Yellow
@@ -2726,7 +3217,7 @@ function Get-Action1App {
         $verNum = [int]$verSelection
 
         if ($verNum -eq 0) {
-            return $versions
+            return ($versions | Expand-NestedJsonAttributes -ExpandFileNames -FormatNested)
         }
 
         if ($verNum -lt 1 -or $verNum -gt $versions.Count) {
@@ -2742,7 +3233,7 @@ function Get-Action1App {
             -Endpoint "software-repository/$OrganizationId/$($selectedRepo.id)/versions/$($selectedVersion.id)" `
             -Method GET
 
-        return $versionDetails
+        return ($versionDetails | Expand-NestedJsonAttributes -ExpandFileNames -FormatNested)
     }
     catch {
         Write-Error "Failed to retrieve applications: $($_.Exception.Message)"
@@ -2766,7 +3257,7 @@ function Get-Action1Organization {
     try {
         Write-Action1Log "Fetching organizations..." -Level INFO
         $response = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
-        $orgs = if ($response.items) { $response.items } else { @($response) }
+        $orgs = if ($response.items) { @($response.items) } else { @($response) }
         return $orgs
     }
     catch {
@@ -3422,11 +3913,11 @@ function Remove-Action1App {
 # TODO: Add function Update-Action1AppRepo
 
 # Module initialization
-Write-Verbose "Action1AppDeployment module loaded"
+Write-Verbose "Action1.Tools module loaded"
 
 # Try to load saved credentials if they exist
 $credPath = if ($IsWindows -or $PSVersionTable.PSVersion.Major -lt 6) {
-    "$env:LOCALAPPDATA\Action1AppDeployment\credentials.json"
+    "$env:LOCALAPPDATA\Action1.Tools\credentials.json"
 } else {
     "$HOME/.action1/credentials.json"
 }
@@ -3468,6 +3959,7 @@ Export-ModuleMember -Function @(
     'Remove-Action1App',
     'Test-Action1Connection',
     'Set-Action1ApiCredentials',
+    'Get-Action1ApiCredentials',
     'Set-Action1LogLevel',
     'Get-Action1LogLevel',
     'Get-Action1Organization',
