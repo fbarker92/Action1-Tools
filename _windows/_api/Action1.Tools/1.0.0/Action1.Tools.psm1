@@ -17,6 +17,17 @@ $script:Action1RegionUrls = @{
 $script:DefaultMsiSwitches = "/qn /norestart"
 $script:LogLevel = "INFO"
 $script:LogFilePath = $null
+
+# Cross-platform configuration directory path
+$script:Action1ConfigDir = if ($IsWindows) {
+    Join-Path $env:LOCALAPPDATA "Action1.Tools"
+} elseif ($IsMacOS) {
+    Join-Path $HOME ".action1"
+} else {
+    # Linux - follow XDG spec
+    $xdgConfig = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME ".config" }
+    Join-Path $xdgConfig "action1"
+}
 $script:LogLevels = @{
     TRACE = 0
     DEBUG = 1
@@ -1998,20 +2009,14 @@ function Set-Action1ApiCredentials {
     if ($SaveToProfile) {
         Write-Action1Log "Saving credentials to profile" -Level INFO
 
-        $profilePath = if ($IsWindows -or $PSVersionTable.PSVersion.Major -lt 6) {
-            "$env:LOCALAPPDATA\Action1.Tools"
-        } else {
-            "$HOME/.action1"
-        }
+        Write-Action1Log "Profile path: $script:Action1ConfigDir" -Level DEBUG
 
-        Write-Action1Log "Profile path: $profilePath" -Level DEBUG
-
-        if (-not (Test-Path $profilePath)) {
+        if (-not (Test-Path $script:Action1ConfigDir)) {
             Write-Action1Log "Creating profile directory" -Level DEBUG
-            New-Item -Path $profilePath -ItemType Directory -Force | Out-Null
+            New-Item -Path $script:Action1ConfigDir -ItemType Directory -Force | Out-Null
         }
 
-        $credFile = Join-Path $profilePath "credentials.json"
+        $credFile = Join-Path $script:Action1ConfigDir "credentials.json"
 
         try {
             @{
@@ -3916,11 +3921,7 @@ function Remove-Action1App {
 Write-Verbose "Action1.Tools module loaded"
 
 # Try to load saved credentials if they exist
-$credPath = if ($IsWindows -or $PSVersionTable.PSVersion.Major -lt 6) {
-    "$env:LOCALAPPDATA\Action1.Tools\credentials.json"
-} else {
-    "$HOME/.action1/credentials.json"
-}
+$credPath = Join-Path $script:Action1ConfigDir "credentials.json"
 
 if (Test-Path $credPath) {
     try {
