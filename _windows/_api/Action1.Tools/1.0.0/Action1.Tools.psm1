@@ -15,7 +15,7 @@ $script:Action1RegionUrls = @{
     'Australia'    = 'https://app.au.action1.com/api/3.0'
 }
 $script:DefaultMsiSwitches = "/qn /norestart"
-$script:LogLevel = "INFO"
+$script:LogLevel = "SILENT"
 $script:LogFilePath = $null
 
 # Cross-platform configuration directory path
@@ -34,6 +34,7 @@ $script:LogLevels = @{
     INFO = 2
     WARN = 3
     ERROR = 4
+    SILENT = 5
 }
 
 #region Logging Functions
@@ -42,9 +43,15 @@ function Write-Action1Log {
     <#
     .SYNOPSIS
         Internal logging function for the module.
-    
+
     .DESCRIPTION
-        Provides structured logging with levels: TRACE, DEBUG, INFO, WARN, ERROR
+        Provides structured logging with levels: TRACE, DEBUG, INFO, WARN, ERROR, SILENT.
+        File logging is one level more verbose than console output:
+        - SILENT console → INFO to file
+        - ERROR console → WARN to file
+        - WARN console → INFO to file
+        - INFO console → DEBUG to file
+        - DEBUG/TRACE console → TRACE to file
     #>
     [CmdletBinding()]
     param(
@@ -62,38 +69,58 @@ function Write-Action1Log {
         [System.Management.Automation.ErrorRecord]$ErrorRecord
     )
     
-    # Check if this log level should be displayed
-    if ($script:LogLevels[$Level] -lt $script:LogLevels[$script:LogLevel]) {
+    # Determine file log level (one level more verbose than console)
+    $fileLogLevel = switch ($script:LogLevel) {
+        'SILENT' { 'INFO' }
+        'ERROR'  { 'WARN' }
+        'WARN'   { 'INFO' }
+        'INFO'   { 'DEBUG' }
+        'DEBUG'  { 'TRACE' }
+        'TRACE'  { 'TRACE' }
+    }
+
+    # Check if this message should be shown on console or written to file
+    $shouldDisplayConsole = $script:LogLevels[$Level] -ge $script:LogLevels[$script:LogLevel]
+    $shouldWriteToFile = $script:LogLevels[$Level] -ge $script:LogLevels[$fileLogLevel]
+    $isSilent = $script:LogLevel -eq 'SILENT'
+
+    # Skip entirely if below both thresholds
+    if (-not $shouldDisplayConsole -and -not $shouldWriteToFile) {
         return
     }
-    
+
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
     $callerInfo = (Get-PSCallStack)[1]
     $caller = "$($callerInfo.Command)"
-    
+
     # Build log message
     $logMessage = "[$timestamp] [$Level] [$caller] $Message"
-    
-    # Color coding for console output
-    $color = switch ($Level) {
-        'TRACE' { 'Gray' }
-        'DEBUG' { 'Cyan' }
-        'INFO' { 'White' }
-        'WARN' { 'Yellow' }
-        'ERROR' { 'Red' }
+
+    # Only write to console if not in SILENT mode
+    if (-not $isSilent) {
+        # Color coding for console output
+        $color = switch ($Level) {
+            'TRACE' { 'Gray' }
+            'DEBUG' { 'Cyan' }
+            'INFO' { 'White' }
+            'WARN' { 'Yellow' }
+            'ERROR' { 'Red' }
+        }
+
+        # Write to console
+        Write-Host $logMessage -ForegroundColor $color
     }
-    
-    # Write to console
-    Write-Host $logMessage -ForegroundColor $color
-    
+
     # Add data if provided
     if ($Data) {
         $dataString = $Data | ConvertTo-Json -Depth 5 -Compress
         $dataMessage = "[$timestamp] [$Level] [$caller] DATA: $dataString"
-        Write-Host $dataMessage -ForegroundColor DarkGray
+        if (-not $isSilent) {
+            Write-Host $dataMessage -ForegroundColor DarkGray
+        }
         $logMessage += "`n$dataMessage"
     }
-    
+
     # Add error details if provided
     if ($ErrorRecord) {
         $errorMessage = "[$timestamp] [$Level] [$caller] ERROR DETAILS: $($ErrorRecord.Exception.Message)"
@@ -101,12 +128,14 @@ function Write-Action1Log {
         if ($ErrorRecord.Exception.StackTrace) {
             $errorMessage += "`n  StackTrace: $($ErrorRecord.Exception.StackTrace)"
         }
-        Write-Host $errorMessage -ForegroundColor Red
+        if (-not $isSilent) {
+            Write-Host $errorMessage -ForegroundColor Red
+        }
         $logMessage += "`n$errorMessage"
     }
-    
-    # Write to log file if configured
-    if ($script:LogFilePath) {
+
+    # Write to log file if configured and message meets file threshold
+    if ($script:LogFilePath -and $shouldWriteToFile) {
         try {
             $logMessage | Add-Content -Path $script:LogFilePath -ErrorAction Stop
         }
@@ -120,27 +149,38 @@ function Set-Action1LogLevel {
     <#
     .SYNOPSIS
         Sets the logging level for the module.
-    
+
     .DESCRIPTION
         Controls which log messages are displayed based on severity.
-        TRACE (most verbose) > DEBUG > INFO > WARN > ERROR (least verbose)
-    
+        TRACE (most verbose) > DEBUG > INFO > WARN > ERROR > SILENT (no console output)
+
+        File logging is automatically one level more verbose than console:
+        - SILENT → logs INFO and above to file
+        - ERROR → logs WARN and above to file
+        - WARN → logs INFO and above to file
+        - INFO → logs DEBUG and above to file
+        - DEBUG/TRACE → logs TRACE and above to file
+
     .PARAMETER Level
-        The minimum log level to display.
-    
+        The minimum log level to display on console. Default is SILENT.
+
     .PARAMETER LogFile
         Optional path to write logs to a file.
-    
+
     .EXAMPLE
         Set-Action1LogLevel -Level DEBUG
-    
+
     .EXAMPLE
         Set-Action1LogLevel -Level TRACE -LogFile "C:\Logs\action1-deployment.log"
+
+    .EXAMPLE
+        Set-Action1LogLevel -Level SILENT -LogFile "C:\Logs\action1.log"
+        # Suppresses console output but logs INFO and above to file
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR')]
+        [ValidateSet('TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT')]
         [string]$Level,
         
         [Parameter()]
