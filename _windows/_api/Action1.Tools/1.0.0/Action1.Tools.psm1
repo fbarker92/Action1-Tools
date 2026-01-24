@@ -451,19 +451,17 @@ function Select-Action1Organization {
 
         Write-Host "`n${Prompt}:" -ForegroundColor Cyan
 
-        $startIndex = 1
         if ($IncludeAll) {
-            Write-Host "  [1] All (Enterprise-wide)" -ForegroundColor Cyan
-            $startIndex = 2
+            Write-Host "  [0] All (Enterprise-wide)"
         }
 
         for ($i = 0; $i -lt $orgs.Count; $i++) {
-            $displayNum = $i + $startIndex
-            Write-Host "  [$displayNum] $($orgs[$i].name)"
+            Write-Host "  [$($i + 1)] $($orgs[$i].name)"
         }
 
-        $maxSelection = $orgs.Count + ($startIndex - 1)
-        $selection = Read-Host "`nEnter selection (1-$maxSelection)"
+        $maxSelection = $orgs.Count
+        $selectionPrompt = if ($IncludeAll) { "0-$maxSelection" } else { "1-$maxSelection" }
+        $selection = Read-Host "`nEnter selection ($selectionPrompt)"
 
         if (-not $selection) {
             if ($IncludeAll) {
@@ -476,12 +474,12 @@ function Select-Action1Organization {
 
         $selNum = [int]$selection
 
-        if ($IncludeAll -and $selNum -eq 1) {
+        if ($IncludeAll -and $selNum -eq 0) {
             Write-Host "Selected: All (Enterprise-wide)" -ForegroundColor Green
             return @{ Id = "all"; Name = "All (Enterprise-wide)" }
         }
 
-        $orgIndex = $selNum - $startIndex
+        $orgIndex = $selNum - 1
         if ($orgIndex -ge 0 -and $orgIndex -lt $orgs.Count) {
             $selectedOrg = $orgs[$orgIndex]
             Write-Host "Selected: $($selectedOrg.name)" -ForegroundColor Green
