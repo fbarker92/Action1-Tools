@@ -2375,14 +2375,15 @@ function New-Action1AppRepo {
         If specified, also creates the software repository in Action1 via API.
 
     .PARAMETER OrganizationId
-        Action1 organization ID. Required if CreateInAction1 is specified.
-        If not provided, will prompt for it.
+        Action1 organization ID or "all" for all organizations.
+        If not provided, will prompt for scope selection (defaults to "all").
 
     .PARAMETER Description
         Description for the Action1 software repository.
 
     .PARAMETER Publisher
-        Publisher/vendor name for the application.
+        Publisher/vendor name for the application. Required when using -CreateInAction1.
+        If not provided, will prompt for it.
 
     .PARAMETER Version
         Initial version number. Defaults to "1.0.0".
@@ -2391,10 +2392,16 @@ function New-Action1AppRepo {
         New-Action1AppRepo -AppName "7-Zip"
 
     .EXAMPLE
-        New-Action1AppRepo -AppName "PowerShell 7" -CreateInAction1 -OrganizationId "org_123"
+        New-Action1AppRepo -AppName "PowerShell 7" -CreateInAction1
+        # Will prompt for scope (defaults to "all" organizations)
 
     .EXAMPLE
-        New-Action1AppRepo -AppName "Visual Studio Code" -CreateInAction1 -Publisher "Microsoft" -Description "Code editor"
+        New-Action1AppRepo -AppName "PowerShell 7" -CreateInAction1 -OrganizationId "all"
+        # Explicitly use all organizations scope
+
+    .EXAMPLE
+        New-Action1AppRepo -AppName "Visual Studio Code" -CreateInAction1 -OrganizationId "org_123" -Publisher "Microsoft" -Description "Code editor"
+        # Use specific organization
     #>
     [CmdletBinding()]
     param(
@@ -2574,37 +2581,60 @@ Write-Host "Post-installation complete."
         Write-Action1Log "Creating software repository in Action1" -Level INFO
         Write-Host "`n--- Creating Action1 Software Repository ---" -ForegroundColor Cyan
 
-        # Prompt for missing required information
+        # Prompt for organization scope if not provided
         if (-not $OrganizationId) {
-            # Try to get organizations list
-            try {
-                Write-Host "Fetching available organizations..." -ForegroundColor Gray
-                $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
-                $orgs = @($orgsResponse)
+            Write-Host "`nOrganization Scope:" -ForegroundColor Yellow
+            Write-Host "  [1] All Organizations (default)" -ForegroundColor White
+            Write-Host "  [2] Specific Organization" -ForegroundColor White
 
-                if ($orgs.Count -eq 0) {
-                    $OrganizationId = Read-Host "Enter Action1 Organization ID"
-                } elseif ($orgs.Count -eq 1) {
-                    $OrganizationId = $orgs[0].id
-                    Write-Host "Using organization: $($orgs[0].name) ($OrganizationId)" -ForegroundColor Green
-                } else {
-                    Write-Host "`nAvailable organizations:" -ForegroundColor Yellow
-                    for ($i = 0; $i -lt $orgs.Count; $i++) {
-                        Write-Host "  [$($i + 1)] $($orgs[$i].name) ($($orgs[$i].id))"
-                    }
-                    $selection = Read-Host "`nSelect organization (1-$($orgs.Count))"
-                    $selectedIndex = [int]$selection - 1
-                    if ($selectedIndex -ge 0 -and $selectedIndex -lt $orgs.Count) {
-                        $OrganizationId = $orgs[$selectedIndex].id
-                        Write-Host "Selected: $($orgs[$selectedIndex].name)" -ForegroundColor Green
+            $scopeSelection = Read-Host "`nSelect scope (1-2, default: 1)"
+
+            if ($scopeSelection -eq '2') {
+                # User wants specific organization - fetch and show list
+                try {
+                    Write-Host "`nFetching available organizations..." -ForegroundColor Gray
+                    $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
+                    $orgs = @($orgsResponse)
+
+                    if ($orgs.Count -eq 0) {
+                        Write-Host "No organizations found. Using 'all' scope." -ForegroundColor Yellow
+                        $OrganizationId = "all"
+                    } elseif ($orgs.Count -eq 1) {
+                        $OrganizationId = $orgs[0].id
+                        Write-Host "Using organization: $($orgs[0].name) ($OrganizationId)" -ForegroundColor Green
                     } else {
-                        throw "Invalid selection"
+                        Write-Host "`nAvailable organizations:" -ForegroundColor Yellow
+                        for ($i = 0; $i -lt $orgs.Count; $i++) {
+                            Write-Host "  [$($i + 1)] $($orgs[$i].name) ($($orgs[$i].id))"
+                        }
+                        $orgSelection = Read-Host "`nSelect organization (1-$($orgs.Count))"
+                        $selectedIndex = [int]$orgSelection - 1
+                        if ($selectedIndex -ge 0 -and $selectedIndex -lt $orgs.Count) {
+                            $OrganizationId = $orgs[$selectedIndex].id
+                            Write-Host "Selected: $($orgs[$selectedIndex].name)" -ForegroundColor Green
+                        } else {
+                            Write-Host "Invalid selection. Using 'all' scope." -ForegroundColor Yellow
+                            $OrganizationId = "all"
+                        }
                     }
                 }
+                catch {
+                    Write-Action1Log "Failed to fetch organizations" -Level DEBUG -ErrorRecord $_
+                    $OrganizationId = Read-Host "Enter Action1 Organization ID (or 'all' for all organizations)"
+                    if (-not $OrganizationId) { $OrganizationId = "all" }
+                }
+            } else {
+                # Default to 'all' organizations
+                $OrganizationId = "all"
+                Write-Host "Using scope: All Organizations" -ForegroundColor Green
             }
-            catch {
-                Write-Action1Log "Failed to fetch organizations, prompting manually" -Level DEBUG
-                $OrganizationId = Read-Host "Enter Action1 Organization ID"
+        }
+
+        if (-not $Publisher) {
+            $Publisher = Read-Host "Enter publisher/vendor (required)"
+            if (-not $Publisher) {
+                $Publisher = "Unknown"
+                Write-Host "Using default vendor: Unknown" -ForegroundColor Yellow
             }
         }
 
@@ -2612,14 +2642,11 @@ Write-Host "Post-installation complete."
             $Description = Read-Host "Enter description (optional, press Enter to skip)"
         }
 
-        if (-not $Publisher) {
-            $Publisher = Read-Host "Enter publisher/vendor (optional, press Enter to skip)"
-        }
-
         # Create the software repository package in Action1
         try {
             $packageData = @{
                 name = $AppName
+                vendor = $Publisher
                 description = if ($Description) { $Description } else { "Software repository for $AppName" }
             }
 
