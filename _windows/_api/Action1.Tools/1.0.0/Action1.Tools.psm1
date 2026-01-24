@@ -396,6 +396,113 @@ function Get-ExistingVersions {
     }
 }
 
+function Select-Action1Organization {
+    <#
+    .SYNOPSIS
+        Prompts user to select an Action1 organization.
+
+    .DESCRIPTION
+        Fetches available organizations from the API and displays an interactive
+        selection menu. Supports "All" option for enterprise-wide scope.
+
+    .PARAMETER IncludeAll
+        If specified, includes "All (Enterprise-wide)" as the first option.
+        Defaults to $true.
+
+    .PARAMETER Prompt
+        Custom prompt text. Defaults to "Select Organization".
+
+    .OUTPUTS
+        Returns a hashtable with 'Id' and 'Name' properties, or $null if cancelled.
+
+    .EXAMPLE
+        $org = Select-Action1Organization
+        # Returns @{ Id = "org-123"; Name = "Contoso Corp" }
+
+    .EXAMPLE
+        $org = Select-Action1Organization -IncludeAll:$false
+        # Only shows specific organizations, no "All" option
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [bool]$IncludeAll = $true,
+
+        [Parameter()]
+        [string]$Prompt = "Select Organization"
+    )
+
+    try {
+        Write-Host "`nFetching available organizations..." -ForegroundColor Gray
+        $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
+
+        # Handle both array and items-wrapped responses
+        $orgs = if ($orgsResponse.items) { @($orgsResponse.items) } else { @($orgsResponse) }
+
+        if ($orgs.Count -eq 0) {
+            if ($IncludeAll) {
+                Write-Host "No specific organizations found. Using 'all' scope." -ForegroundColor Yellow
+                return @{ Id = "all"; Name = "All (Enterprise-wide)" }
+            } else {
+                Write-Warning "No organizations found."
+                return $null
+            }
+        }
+
+        Write-Host "`n${Prompt}:" -ForegroundColor Cyan
+
+        $startIndex = 1
+        if ($IncludeAll) {
+            Write-Host "  [1] All (Enterprise-wide)" -ForegroundColor Cyan
+            $startIndex = 2
+        }
+
+        for ($i = 0; $i -lt $orgs.Count; $i++) {
+            $displayNum = $i + $startIndex
+            Write-Host "  [$displayNum] $($orgs[$i].name)"
+        }
+
+        $maxSelection = $orgs.Count + ($startIndex - 1)
+        $selection = Read-Host "`nEnter selection (1-$maxSelection)"
+
+        if (-not $selection) {
+            if ($IncludeAll) {
+                Write-Host "Selected: All (Enterprise-wide)" -ForegroundColor Green
+                return @{ Id = "all"; Name = "All (Enterprise-wide)" }
+            } else {
+                return $null
+            }
+        }
+
+        $selNum = [int]$selection
+
+        if ($IncludeAll -and $selNum -eq 1) {
+            Write-Host "Selected: All (Enterprise-wide)" -ForegroundColor Green
+            return @{ Id = "all"; Name = "All (Enterprise-wide)" }
+        }
+
+        $orgIndex = $selNum - $startIndex
+        if ($orgIndex -ge 0 -and $orgIndex -lt $orgs.Count) {
+            $selectedOrg = $orgs[$orgIndex]
+            Write-Host "Selected: $($selectedOrg.name)" -ForegroundColor Green
+            return @{ Id = $selectedOrg.id; Name = $selectedOrg.name }
+        }
+
+        Write-Host "Invalid selection." -ForegroundColor Yellow
+        if ($IncludeAll) {
+            Write-Host "Using 'all' scope." -ForegroundColor Yellow
+            return @{ Id = "all"; Name = "All (Enterprise-wide)" }
+        }
+        return $null
+    }
+    catch {
+        Write-Action1Log "Failed to fetch organizations: $_" -Level WARN
+        $manualId = Read-Host "Enter Action1 Organization ID manually (or 'all' for all organizations)"
+        if (-not $manualId) { $manualId = "all" }
+        return @{ Id = $manualId; Name = $manualId }
+    }
+}
+
 #endregion Helper Functions
 
 #region Logging Functions
@@ -2992,51 +3099,8 @@ Write-Host "Post-installation complete."
 
         # Prompt for organization scope if not provided
         if (-not $OrganizationId) {
-            Write-Host "`nOrganization Scope:" -ForegroundColor Yellow
-            Write-Host "  [1] All Organizations (default)" -ForegroundColor White
-            Write-Host "  [2] Specific Organization" -ForegroundColor White
-
-            $scopeSelection = Read-Host "`nSelect scope (1-2, default: 1)"
-
-            if ($scopeSelection -eq '2') {
-                # User wants specific organization - fetch and show list
-                try {
-                    Write-Host "`nFetching available organizations..." -ForegroundColor Gray
-                    $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
-                    $orgs = @($orgsResponse)
-
-                    if ($orgs.Count -eq 0) {
-                        Write-Host "No organizations found. Using 'all' scope." -ForegroundColor Yellow
-                        $OrganizationId = "all"
-                    } elseif ($orgs.Count -eq 1) {
-                        $OrganizationId = $orgs[0].id
-                        Write-Host "Using organization: $($orgs[0].name) ($OrganizationId)" -ForegroundColor Green
-                    } else {
-                        Write-Host "`nAvailable organizations:" -ForegroundColor Yellow
-                        for ($i = 0; $i -lt $orgs.Count; $i++) {
-                            Write-Host "  [$($i + 1)] $($orgs[$i].name) ($($orgs[$i].id))"
-                        }
-                        $orgSelection = Read-Host "`nSelect organization (1-$($orgs.Count))"
-                        $selectedIndex = [int]$orgSelection - 1
-                        if ($selectedIndex -ge 0 -and $selectedIndex -lt $orgs.Count) {
-                            $OrganizationId = $orgs[$selectedIndex].id
-                            Write-Host "Selected: $($orgs[$selectedIndex].name)" -ForegroundColor Green
-                        } else {
-                            Write-Host "Invalid selection. Using 'all' scope." -ForegroundColor Yellow
-                            $OrganizationId = "all"
-                        }
-                    }
-                }
-                catch {
-                    Write-Action1Log "Failed to fetch organizations" -Level DEBUG -ErrorRecord $_
-                    $OrganizationId = Read-Host "Enter Action1 Organization ID (or 'all' for all organizations)"
-                    if (-not $OrganizationId) { $OrganizationId = "all" }
-                }
-            } else {
-                # Default to 'all' organizations
-                $OrganizationId = "all"
-                Write-Host "Using scope: All Organizations" -ForegroundColor Green
-            }
+            $selectedOrg = Select-Action1Organization -IncludeAll $true
+            $OrganizationId = $selectedOrg.Id
         }
 
         if (-not $Publisher) {
@@ -3494,44 +3558,8 @@ function Deploy-Action1App {
             $OrganizationId = $manifest.Action1Config.OrganizationId
             Write-Host "Using organization from manifest: $OrganizationId" -ForegroundColor Green
         } else {
-            # Fetch and display available organizations
-            try {
-                Write-Host "`nFetching available organizations..." -ForegroundColor Gray
-                $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
-                $orgs = @($orgsResponse)
-
-                Write-Host "`nOrganization scope:" -ForegroundColor Yellow
-                Write-Host "  [0] All organizations" -ForegroundColor Cyan
-
-                if ($orgs.Count -gt 0) {
-                    for ($i = 0; $i -lt $orgs.Count; $i++) {
-                        Write-Host "  [$($i + 1)] $($orgs[$i].name) ($($orgs[$i].id))"
-                    }
-                    $orgSelection = Read-Host "`nSelect organization (0 for All, 1-$($orgs.Count) for specific)"
-
-                    if ($orgSelection -eq "0" -or $orgSelection -eq "") {
-                        $OrganizationId = "all"
-                        Write-Host "Selected: All organizations" -ForegroundColor Green
-                    } else {
-                        $selectedIndex = [int]$orgSelection - 1
-                        if ($selectedIndex -ge 0 -and $selectedIndex -lt $orgs.Count) {
-                            $OrganizationId = $orgs[$selectedIndex].id
-                            Write-Host "Selected: $($orgs[$selectedIndex].name)" -ForegroundColor Green
-                        } else {
-                            Write-Host "Invalid selection. Using 'all' scope." -ForegroundColor Yellow
-                            $OrganizationId = "all"
-                        }
-                    }
-                } else {
-                    Write-Host "No specific organizations found. Using 'all' scope." -ForegroundColor Yellow
-                    $OrganizationId = "all"
-                }
-            }
-            catch {
-                Write-Action1Log "Failed to fetch organizations" -Level DEBUG -ErrorRecord $_
-                $OrganizationId = Read-Host "Enter Action1 Organization ID (or 'all' for all organizations)"
-                if (-not $OrganizationId) { $OrganizationId = "all" }
-            }
+            $selectedOrg = Select-Action1Organization -IncludeAll $true
+            $OrganizationId = $selectedOrg.Id
 
             # Save to manifest for future use
             $manifest.Action1Config.OrganizationId = $OrganizationId
@@ -3813,57 +3841,13 @@ function Get-Action1App {
     )
 
     try {
-        # If no OrganizationId provided, fetch and prompt for selection
+        # If no OrganizationId provided, prompt for selection
         if (-not $OrganizationId) {
-            Write-Action1Log "Fetching available organizations..." -Level INFO
-            $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
-
-            $orgs = if ($orgsResponse.items) { @($orgsResponse.items) } else { @($orgsResponse) }
-
-            if ($orgs.Count -eq 0) {
-                throw "No organizations found."
+            $selectedOrg = Select-Action1Organization -IncludeAll $true
+            if (-not $selectedOrg) {
+                throw "No organization selected."
             }
-
-            if ($orgs.Count -eq 1) {
-                # Still offer "All" option even with single org
-                Write-Host "`nSelect Organization:" -ForegroundColor Cyan
-                Write-Host "  [1] All (Enterprise-wide)"
-                Write-Host "  [2] $($orgs[0].name)"
-
-                $selection = Read-Host "`nEnter selection (1-2)"
-                if ($selection -eq '1') {
-                    $OrganizationId = 'all'
-                    Write-Host "Selected: All (Enterprise-wide)" -ForegroundColor Green
-                }
-                else {
-                    $OrganizationId = $orgs[0].id
-                    Write-Host "Selected: $($orgs[0].name)" -ForegroundColor Green
-                }
-            }
-            else {
-                Write-Host "`nSelect Organization:" -ForegroundColor Cyan
-                Write-Host "  [1] All (Enterprise-wide)"
-                for ($i = 0; $i -lt $orgs.Count; $i++) {
-                    Write-Host "  [$($i + 2)] $($orgs[$i].name)"
-                }
-
-                $maxSelection = $orgs.Count + 1
-                $selection = Read-Host "`nEnter selection (1-$maxSelection)"
-                $selNum = [int]$selection
-
-                if ($selNum -eq 1) {
-                    $OrganizationId = 'all'
-                    Write-Host "Selected: All (Enterprise-wide)" -ForegroundColor Green
-                }
-                elseif ($selNum -ge 2 -and $selNum -le $maxSelection) {
-                    $selIndex = $selNum - 2
-                    $OrganizationId = $orgs[$selIndex].id
-                    Write-Host "Selected: $($orgs[$selIndex].name)" -ForegroundColor Green
-                }
-                else {
-                    throw "Invalid selection."
-                }
-            }
+            $OrganizationId = $selectedOrg.Id
         }
 
         # If specific version requested
@@ -4052,25 +4036,11 @@ function Get-Action1EndpointGroup {
     try {
         # If no OrganizationId provided, prompt for selection
         if (-not $OrganizationId) {
-            $orgs = Get-Action1Organization
-            if ($orgs.Count -eq 0) {
-                throw "No organizations found."
+            $selectedOrg = Select-Action1Organization -IncludeAll $false
+            if (-not $selectedOrg) {
+                throw "No organization selected."
             }
-
-            Write-Host "`nSelect Organization:" -ForegroundColor Cyan
-            for ($i = 0; $i -lt $orgs.Count; $i++) {
-                Write-Host "  [$($i + 1)] $($orgs[$i].name)"
-            }
-
-            $selection = Read-Host "`nEnter selection (1-$($orgs.Count))"
-            $selNum = [int]$selection
-
-            if ($selNum -lt 1 -or $selNum -gt $orgs.Count) {
-                throw "Invalid selection."
-            }
-
-            $OrganizationId = $orgs[$selNum - 1].id
-            Write-Host "Selected: $($orgs[$selNum - 1].name)" -ForegroundColor Green
+            $OrganizationId = $selectedOrg.Id
         }
 
         # If specific group requested
@@ -4210,25 +4180,11 @@ function Get-Action1Automation {
     try {
         # If no OrganizationId provided, prompt for selection
         if (-not $OrganizationId) {
-            $orgs = Get-Action1Organization
-            if ($orgs.Count -eq 0) {
-                throw "No organizations found."
+            $selectedOrg = Select-Action1Organization -IncludeAll $false
+            if (-not $selectedOrg) {
+                throw "No organization selected."
             }
-
-            Write-Host "`nSelect Organization:" -ForegroundColor Cyan
-            for ($i = 0; $i -lt $orgs.Count; $i++) {
-                Write-Host "  [$($i + 1)] $($orgs[$i].name)"
-            }
-
-            $selection = Read-Host "`nEnter selection (1-$($orgs.Count))"
-            $selNum = [int]$selection
-
-            if ($selNum -lt 1 -or $selNum -gt $orgs.Count) {
-                throw "Invalid selection."
-            }
-
-            $OrganizationId = $orgs[$selNum - 1].id
-            Write-Host "Selected: $($orgs[$selNum - 1].name)" -ForegroundColor Green
+            $OrganizationId = $selectedOrg.Id
         }
 
         # If specific automation requested
