@@ -3492,8 +3492,48 @@ function Deploy-Action1App {
     if (-not $OrganizationId) {
         if ($manifest.Action1Config.OrganizationId) {
             $OrganizationId = $manifest.Action1Config.OrganizationId
+            Write-Host "Using organization from manifest: $OrganizationId" -ForegroundColor Green
         } else {
-            $OrganizationId = Read-Host "Enter Action1 Organization ID"
+            # Fetch and display available organizations
+            try {
+                Write-Host "`nFetching available organizations..." -ForegroundColor Gray
+                $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
+                $orgs = @($orgsResponse)
+
+                Write-Host "`nOrganization scope:" -ForegroundColor Yellow
+                Write-Host "  [0] All organizations" -ForegroundColor Cyan
+
+                if ($orgs.Count -gt 0) {
+                    for ($i = 0; $i -lt $orgs.Count; $i++) {
+                        Write-Host "  [$($i + 1)] $($orgs[$i].name) ($($orgs[$i].id))"
+                    }
+                    $orgSelection = Read-Host "`nSelect organization (0 for All, 1-$($orgs.Count) for specific)"
+
+                    if ($orgSelection -eq "0" -or $orgSelection -eq "") {
+                        $OrganizationId = "all"
+                        Write-Host "Selected: All organizations" -ForegroundColor Green
+                    } else {
+                        $selectedIndex = [int]$orgSelection - 1
+                        if ($selectedIndex -ge 0 -and $selectedIndex -lt $orgs.Count) {
+                            $OrganizationId = $orgs[$selectedIndex].id
+                            Write-Host "Selected: $($orgs[$selectedIndex].name)" -ForegroundColor Green
+                        } else {
+                            Write-Host "Invalid selection. Using 'all' scope." -ForegroundColor Yellow
+                            $OrganizationId = "all"
+                        }
+                    }
+                } else {
+                    Write-Host "No specific organizations found. Using 'all' scope." -ForegroundColor Yellow
+                    $OrganizationId = "all"
+                }
+            }
+            catch {
+                Write-Action1Log "Failed to fetch organizations" -Level DEBUG -ErrorRecord $_
+                $OrganizationId = Read-Host "Enter Action1 Organization ID (or 'all' for all organizations)"
+                if (-not $OrganizationId) { $OrganizationId = "all" }
+            }
+
+            # Save to manifest for future use
             $manifest.Action1Config.OrganizationId = $OrganizationId
             Write-ManifestFile -Manifest $manifest -Path $ManifestPath
         }
