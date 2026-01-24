@@ -2943,155 +2943,99 @@ Write-Host "Post-installation complete."
 function New-Action1AppPackage {
     <#
     .SYNOPSIS
-        Creates a new Action1 application package from an installer file.
+        Creates a new Action1 application package with support for multiple architectures.
 
     .DESCRIPTION
-        Automatically scrapes application metadata (name, version, vendor) from installer
-        file properties, prompts for silent install arguments, creates the package folder
-        structure in /vendor/app/version/ format, and generates a manifest file.
-
-    .PARAMETER InstallerPath
-        Path to the installer file (.exe or .msi).
+        Prompts for application metadata and creates the package folder structure
+        in /vendor/app/version/ format. Supports adding installers for multiple
+        architectures (x86, x64, arm64).
 
     .PARAMETER BasePath
         Base path where the package folder structure will be created.
         Defaults to current directory.
 
-    .PARAMETER InstallSwitches
-        Silent install arguments. If not provided, will prompt interactively.
+    .PARAMETER Publisher
+        Publisher/vendor name. If not provided, will prompt.
 
-    .PARAMETER UninstallSwitches
-        Silent uninstall arguments. Optional.
+    .PARAMETER AppName
+        Application name. If not provided, will prompt.
 
-    .PARAMETER SkipPrompt
-        If specified, skips the prompt for silent install arguments and uses defaults.
+    .PARAMETER Version
+        Application version. If not provided, will prompt.
+
+    .PARAMETER Description
+        Application description. Optional.
 
     .EXAMPLE
-        New-Action1AppPackage -InstallerPath "C:\Downloads\7z2301-x64.exe"
+        New-Action1AppPackage
+        # Interactive mode - prompts for all information
 
     .EXAMPLE
-        New-Action1AppPackage -InstallerPath "C:\Downloads\vlc-3.0.18-win64.msi" -BasePath "C:\Packages" -InstallSwitches "/qn /norestart"
+        New-Action1AppPackage -Publisher "Microsoft" -AppName "PowerShell" -Version "7.4.0"
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
-        [ValidateScript({ Test-Path $_ -PathType Leaf })]
-        [string]$InstallerPath,
-
         [Parameter()]
         [string]$BasePath = (Get-Location).Path,
 
         [Parameter()]
-        [string]$InstallSwitches,
+        [string]$Publisher,
 
         [Parameter()]
-        [string]$UninstallSwitches,
+        [string]$AppName,
 
         [Parameter()]
-        [switch]$SkipPrompt
+        [string]$Version,
+
+        [Parameter()]
+        [string]$Description
     )
 
     Write-Host "`n=== Action1 Application Packager ===" -ForegroundColor Cyan
-    Write-Action1Log "Creating new application package from: $InstallerPath" -Level INFO
+    Write-Action1Log "Creating new application package" -Level INFO
 
-    # Get installer file info
-    $installerFile = Get-Item $InstallerPath
-    $installerExtension = $installerFile.Extension.ToLower()
+    # Get existing folders for auto-completion
+    $existingVendors = @(Get-ExistingVendors -BasePath $BasePath)
 
-    # Validate installer type
-    if ($installerExtension -notin @('.exe', '.msi')) {
-        throw "Unsupported installer type: $installerExtension. Only .exe and .msi files are supported."
+    # Prompt for application information
+    Write-Host "`n--- Application Information ---" -ForegroundColor Cyan
+
+    if (-not $Publisher) {
+        $Publisher = Read-HostWithCompletion `
+            -Prompt "Vendor/Publisher" `
+            -Suggestions $existingVendors `
+            -Required
     }
 
-    Write-Host "`nAnalyzing installer: $($installerFile.Name)" -ForegroundColor Yellow
-    Write-Action1Log "Installer file: $($installerFile.FullName)" -Level DEBUG
-    Write-Action1Log "Installer size: $([math]::Round($installerFile.Length / 1MB, 2)) MB" -Level DEBUG
+    $sanitizedVendorForLookup = $Publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $existingApps = @(Get-ExistingApps -BasePath $BasePath -Vendor $sanitizedVendorForLookup)
 
-    # Use comprehensive metadata extraction with multiple fallback methods
-    Write-Host "Extracting metadata (using multiple extraction methods)..." -ForegroundColor Cyan
-    $metadata = Get-InstallerMetadata -Path $installerFile.FullName
-
-    $appName = $metadata.ProductName
-    $appVersion = $metadata.ProductVersion
-    $publisher = $metadata.Publisher
-    $description = $metadata.Description
-    $installerType = $metadata.InstallerType.ToLower()
-
-    # Display extracted information
-    Write-Host "`n--- Extracted Application Information ---" -ForegroundColor Cyan
-    Write-Host "  Application Name: $appName"
-    Write-Host "  Version: $appVersion"
-    Write-Host "  Publisher/Vendor: $publisher"
-    Write-Host "  Description: $description"
-    Write-Host "  Installer Type: $installerType"
-    Write-Host "  Data Sources: $($metadata.Sources -join ', ')" -ForegroundColor DarkGray
-
-    # Prompt for silent install arguments if not provided
-    if (-not $InstallSwitches -and -not $SkipPrompt) {
-        Write-Host "`n--- Silent Install Arguments ---" -ForegroundColor Cyan
-
-        if ($installerType -eq 'msi') {
-            Write-Host "Default MSI switches: $script:DefaultMsiSwitches (automatically added by Action1)"
-            Write-Host "You can add additional switches if needed (e.g., INSTALLDIR=`"C:\Program Files\App`")"
-            $InstallSwitches = Read-Host "Additional install switches (press Enter for none)"
-        } else {
-            Write-Host "Common silent install switches:"
-            # Show context-aware suggestions based on detected installer type
-            if ($installerType -eq 'inno setup') {
-                Write-Host "  /verysilent /norestart - Inno Setup (Recommended for this installer)" -ForegroundColor Green
-                Write-Host "  /silent /norestart     - Inno Setup (shows progress)"
-                $defaultSwitch = "/verysilent /norestart"
-            } elseif ($installerType -eq 'nsis') {
-                Write-Host "  /S                     - NSIS silent (Recommended for this installer)" -ForegroundColor Green
-                $defaultSwitch = "/S"
-            } else {
-                Write-Host "  /S or /silent      - Generic silent (NSIS, many others)"
-                Write-Host "  /quiet /norestart  - Many installers"
-                Write-Host "  /verysilent /norestart - Inno Setup"
-                Write-Host "  -q -norestart      - Some installers"
-                Write-Host "  --silent           - Some modern installers"
-                $defaultSwitch = "/S"
-            }
-            $InstallSwitches = Read-Host "Install switches [$defaultSwitch]"
-            if (-not $InstallSwitches) {
-                $InstallSwitches = $defaultSwitch
-            }
-        }
-    } elseif (-not $InstallSwitches -and $SkipPrompt) {
-        # Apply smart defaults based on detected installer type
-        $InstallSwitches = switch ($installerType) {
-            'msi' { "" }
-            'inno setup' { "/verysilent /norestart" }
-            'nsis' { "/S" }
-            default { "/S" }
-        }
+    if (-not $AppName) {
+        $AppName = Read-HostWithCompletion `
+            -Prompt "Application Name" `
+            -Suggestions $existingApps `
+            -Required
     }
 
-    # Prompt for uninstall switches if not provided
-    if (-not $UninstallSwitches -and -not $SkipPrompt) {
-        $defaultUninstall = switch ($installerType) {
-            'msi' { "" }
-            'inno setup' { "/verysilent /norestart" }
-            'nsis' { "/S" }
-            default { "/S" }
-        }
-        $UninstallSwitches = Read-Host "Uninstall switches [$defaultUninstall]"
-        if (-not $UninstallSwitches) {
-            $UninstallSwitches = $defaultUninstall
-        }
-    } elseif (-not $UninstallSwitches -and $SkipPrompt) {
-        $UninstallSwitches = switch ($installerType) {
-            'msi' { "" }
-            'inno setup' { "/verysilent /norestart" }
-            'nsis' { "/S" }
-            default { "/S" }
-        }
+    $sanitizedAppForLookup = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $existingVersions = @(Get-ExistingVersions -BasePath $BasePath -Vendor $sanitizedVendorForLookup -AppName $sanitizedAppForLookup)
+
+    if (-not $Version) {
+        $Version = Read-HostWithCompletion `
+            -Prompt "Version" `
+            -Suggestions $existingVersions `
+            -Default "1.0.0"
+    }
+
+    if (-not $Description) {
+        Write-Host "Description (optional): " -NoNewline
+        $Description = Read-Host
     }
 
     # Sanitize names for folder creation
-    $sanitizedPublisher = $publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
-    $sanitizedAppName = $appName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
-    $sanitizedVersion = $appVersion -replace '[\\/:*?"<>|]', '_'
+    $sanitizedPublisher = $Publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $sanitizedAppName = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $sanitizedVersion = $Version -replace '[\\/:*?"<>|]', '_'
 
     # Create folder structure: /vendor/app/version/
     $packagePath = Join-Path $BasePath $sanitizedPublisher $sanitizedAppName $sanitizedVersion
@@ -3100,10 +3044,13 @@ function New-Action1AppPackage {
     Write-Host "Package path: $packagePath"
     Write-Action1Log "Creating package folder structure: $packagePath" -Level INFO
 
-    # Create directories
+    # Create directories including architecture-specific installer folders
     $directories = @(
         $packagePath,
         (Join-Path $packagePath "installers"),
+        (Join-Path $packagePath "installers" "x86"),
+        (Join-Path $packagePath "installers" "x64"),
+        (Join-Path $packagePath "installers" "arm64"),
         (Join-Path $packagePath "scripts"),
         (Join-Path $packagePath "documentation")
     )
@@ -3112,32 +3059,115 @@ function New-Action1AppPackage {
         if (-not (Test-Path $dir)) {
             Write-Action1Log "Creating directory: $dir" -Level DEBUG
             New-Item -Path $dir -ItemType Directory -Force | Out-Null
-            Write-Host "  Created: $dir" -ForegroundColor Gray
-        } else {
-            Write-Action1Log "Directory already exists: $dir" -Level WARN
-            Write-Host "  Exists: $dir" -ForegroundColor Yellow
+        }
+    }
+    Write-Host "  Created folder structure" -ForegroundColor Green
+
+    # Prompt for installers
+    Write-Host "`n--- Add Installers ---" -ForegroundColor Cyan
+    Write-Host "  (Tab to complete, Enter to confirm)" -ForegroundColor DarkGray
+
+    $installers = @{
+        x86 = $null
+        x64 = $null
+        arm64 = $null
+    }
+    $installerType = "exe"
+    $installSwitches = ""
+    $uninstallSwitches = ""
+
+    $architectures = @('x64', 'x86', 'arm64')
+
+    foreach ($arch in $architectures) {
+        Write-Host "`n$arch installer path (or press Enter to skip): " -NoNewline -ForegroundColor Yellow
+        $installerPath = Read-Host
+
+        if ($installerPath -and (Test-Path $installerPath -PathType Leaf)) {
+            $installerFile = Get-Item $installerPath
+            $extension = $installerFile.Extension.ToLower()
+
+            if ($extension -notin @('.exe', '.msi')) {
+                Write-Host "  Skipped: Unsupported type ($extension)" -ForegroundColor Yellow
+                continue
+            }
+
+            # Copy installer to architecture folder
+            $destPath = Join-Path $packagePath "installers" $arch $installerFile.Name
+            Copy-Item -Path $installerFile.FullName -Destination $destPath -Force
+            Write-Host "  Added: $($installerFile.Name)" -ForegroundColor Green
+
+            $installers[$arch] = @{
+                FileName = $installerFile.Name
+                Path = $destPath
+                Size = $installerFile.Length
+                Type = if ($extension -eq '.msi') { 'msi' } else { 'exe' }
+            }
+
+            # Use first installer's type as default
+            if (-not $installerType -or $installerType -eq 'exe') {
+                $installerType = $installers[$arch].Type
+            }
+        }
+        elseif ($installerPath) {
+            Write-Host "  File not found: $installerPath" -ForegroundColor Red
         }
     }
 
-    # Copy installer to the installers folder
-    $destinationInstaller = Join-Path $packagePath "installers" $installerFile.Name
-    Write-Host "`nCopying installer to package..." -ForegroundColor Cyan
-    Write-Action1Log "Copying installer from $($installerFile.FullName) to $destinationInstaller" -Level DEBUG
-    Copy-Item -Path $installerFile.FullName -Destination $destinationInstaller -Force
-    Write-Host "  Copied: $($installerFile.Name)" -ForegroundColor Gray
+    # Check if at least one installer was added
+    $hasInstallers = ($installers.Values | Where-Object { $_ -ne $null }).Count -gt 0
+
+    if (-not $hasInstallers) {
+        Write-Host "`nNo installers added. You can add them later to:" -ForegroundColor Yellow
+        Write-Host "  $packagePath\installers\<arch>\" -ForegroundColor Cyan
+    }
+    else {
+        # Prompt for install switches
+        Write-Host "`n--- Silent Install Arguments ---" -ForegroundColor Cyan
+
+        if ($installerType -eq 'msi') {
+            Write-Host "Default MSI switches: $script:DefaultMsiSwitches (automatically added by Action1)"
+            Write-Host "Additional install switches (press Enter for none): " -NoNewline
+            $installSwitches = Read-Host
+        }
+        else {
+            Write-Host "Common silent switches:"
+            Write-Host "  /S              - NSIS"
+            Write-Host "  /verysilent     - Inno Setup"
+            Write-Host "  /quiet          - Many installers"
+            Write-Host "Install switches [/S]: " -NoNewline
+            $installSwitches = Read-Host
+            if (-not $installSwitches) { $installSwitches = "/S" }
+        }
+
+        Write-Host "Uninstall switches [same as install]: " -NoNewline
+        $uninstallSwitches = Read-Host
+        if (-not $uninstallSwitches) { $uninstallSwitches = $installSwitches }
+    }
+
+    # Build installers array for manifest
+    $installersArray = @()
+    foreach ($arch in $architectures) {
+        if ($installers[$arch]) {
+            $installersArray += @{
+                Architecture = $arch
+                FileName = $installers[$arch].FileName
+                Type = $installers[$arch].Type
+            }
+        }
+    }
 
     # Create manifest
     $manifest = [PSCustomObject]@{
-        AppName = $appName
-        Publisher = $publisher
-        Description = $description
-        Version = $appVersion
+        AppName = $AppName
+        Publisher = $Publisher
+        Description = if ($Description) { $Description } else { "" }
+        Version = $Version
         CreatedDate = Get-Date -Format "yyyy-MM-dd"
         LastModified = Get-Date -Format "yyyy-MM-dd"
         InstallerType = $installerType
-        InstallerFileName = $installerFile.Name
-        InstallSwitches = $InstallSwitches
-        UninstallSwitches = $UninstallSwitches
+        Installers = $installersArray
+        InstallSwitches = $installSwitches
+        UninstallSwitches = $uninstallSwitches
         DetectionMethod = @{
             Type = "registry"
             Path = ""
@@ -3145,7 +3175,6 @@ function New-Action1AppPackage {
         }
         Requirements = @{
             OSVersion = ""
-            Architecture = "x64"
             MinDiskSpaceMB = 0
             MinMemoryMB = 0
         }
@@ -3158,8 +3187,6 @@ function New-Action1AppPackage {
         Metadata = @{
             Tags = @()
             Notes = ""
-            SourceFile = $installerFile.Name
-            OriginalPath = $installerFile.FullName
         }
     }
 
@@ -3169,26 +3196,41 @@ function New-Action1AppPackage {
     Write-ManifestFile -Manifest $manifest -Path $manifestPath
 
     # Create README
+    $installersList = if ($installersArray.Count -gt 0) {
+        ($installersArray | ForEach-Object { "- **$($_.Architecture)**: $($_.FileName)" }) -join "`n"
+    } else {
+        "- No installers added yet"
+    }
+
+    $msiNote = if ($installerType -eq 'msi') { "**Note:** Action1 automatically adds: $script:DefaultMsiSwitches" } else { "" }
+    $switchesDisplay = if ($installSwitches) { $installSwitches } else { '(default)' }
+
     $readmeContent = @(
-        "# $appName - Action1 Deployment Package",
+        "# $AppName - Action1 Deployment Package",
         "",
         "## Overview",
-        "This repository contains the deployment package for $appName.",
+        "$Description",
         "",
-        "**Publisher:** $publisher",
-        "**Version:** $appVersion",
+        "**Publisher:** $Publisher",
+        "**Version:** $Version",
         "**Created:** $(Get-Date -Format 'yyyy-MM-dd')",
         "",
         "## Structure",
-        "- **installers/** - Application installer files",
+        "- **installers/** - Architecture-specific installer files",
+        "  - **x86/** - 32-bit installers",
+        "  - **x64/** - 64-bit installers",
+        "  - **arm64/** - ARM64 installers",
         "- **scripts/** - Pre/post installation scripts",
         "- **documentation/** - Additional documentation",
         "- **manifest.json** - Application deployment configuration",
         "",
+        "## Installers",
+        "$installersList",
+        "",
         "## Installation",
         "**Installer Type:** $installerType",
-        "**Install Switches:** $(if ($InstallSwitches) { $InstallSwitches } else { '(default)' })",
-        $(if ($installerType -eq 'msi') { "**Note:** Action1 automatically adds: $script:DefaultMsiSwitches" } else { "" }),
+        "**Install Switches:** $switchesDisplay",
+        "$msiNote",
         "",
         "## Usage",
         '```powershell',
@@ -3206,16 +3248,20 @@ function New-Action1AppPackage {
 
     # Display summary
     Write-Host "`n=== Package Summary ===" -ForegroundColor Green
-    Write-Host "Application: $appName v$appVersion"
-    Write-Host "Publisher: $publisher"
-    Write-Host "Installer: $($installerFile.Name) ($installerType)"
-    Write-Host "Install switches: $(if ($InstallSwitches) { $InstallSwitches } else { '(none - using defaults)' })"
-    if ($installerType -eq 'msi') {
-        Write-Host "  (Action1 will add: $script:DefaultMsiSwitches)"
+    Write-Host "  Vendor:   $Publisher" -ForegroundColor White
+    Write-Host "  App:      $AppName" -ForegroundColor White
+    Write-Host "  Version:  $Version" -ForegroundColor White
+    Write-Host "  Location: $packagePath" -ForegroundColor Cyan
+
+    if ($installersArray.Count -gt 0) {
+        Write-Host "`n  Installers:" -ForegroundColor White
+        foreach ($inst in $installersArray) {
+            Write-Host "    $($inst.Architecture): $($inst.FileName)" -ForegroundColor Gray
+        }
     }
-    Write-Host "Package location: $packagePath"
-    Write-Host "`nPackage prepared successfully!" -ForegroundColor Green
-    Write-Host "Manifest saved to: $manifestPath" -ForegroundColor Cyan
+
+    Write-Host "`n✓ Package created successfully!" -ForegroundColor Green
+    Write-Host "  Manifest: $manifestPath" -ForegroundColor Cyan
 
     Write-Action1Log "Package created successfully at: $packagePath" -Level INFO
 
@@ -3223,10 +3269,11 @@ function New-Action1AppPackage {
         Success = $true
         PackagePath = $packagePath
         ManifestPath = $manifestPath
-        AppName = $appName
-        Version = $appVersion
-        Publisher = $publisher
+        AppName = $AppName
+        Version = $Version
+        Publisher = $Publisher
         InstallerType = $installerType
+        Installers = $installersArray
         Manifest = $manifest
     }
 }
