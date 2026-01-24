@@ -895,8 +895,24 @@ function Get-Action1AccessToken {
         client_secret = $script:Action1ClientSecret
     }
 
+    # TRACE logging for token request (mask sensitive data)
+    Write-Action1Log "Token request URL: $tokenUrl" -Level TRACE
+    Write-Action1Log "Token request body" -Level TRACE -Data @{
+        client_id     = $script:Action1ClientId
+        client_secret = "***MASKED***"
+    }
+
     try {
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $response = Invoke-RestMethod -Uri $tokenUrl -Method POST -Body ($body | ConvertTo-Json) -ContentType 'application/json' -ErrorAction Stop
+        $stopwatch.Stop()
+
+        Write-Action1Log "Token request completed in $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
+        Write-Action1Log "Token response" -Level TRACE -Data @{
+            access_token = "***MASKED*** (length: $($response.access_token.Length))"
+            expires_in   = $response.expires_in
+            token_type   = $response.token_type
+        }
 
         $script:Action1AccessToken = $response.access_token
 
@@ -922,13 +938,22 @@ function Get-Action1Headers {
     # Get or refresh the access token
     $token = Get-Action1AccessToken
 
-    Write-Action1Log "Authentication headers generated successfully" -Level DEBUG
-
-    return @{
+    $headers = @{
         'Authorization' = "Bearer $token"
         'Content-Type'  = 'application/json'
         'Accept'        = 'application/json'
     }
+
+    # TRACE logging for headers (mask sensitive data)
+    Write-Action1Log "Request headers" -Level TRACE -Data @{
+        'Authorization' = "Bearer ***MASKED*** (length: $($token.Length))"
+        'Content-Type'  = $headers['Content-Type']
+        'Accept'        = $headers['Accept']
+    }
+
+    Write-Action1Log "Authentication headers generated successfully" -Level DEBUG
+
+    return $headers
 }
 
 function Invoke-Action1ApiRequest {
@@ -950,42 +975,67 @@ function Invoke-Action1ApiRequest {
     
     $headers = Get-Action1Headers
     $uri = "$script:Action1BaseUri/$Endpoint"
-    
+
     if ($QueryParameters) {
         $queryString = ($QueryParameters.GetEnumerator() | ForEach-Object {
             "$($_.Key)=$([uri]::EscapeDataString($_.Value))"
         }) -join '&'
         $uri = "$uri`?$queryString"
     }
-    
+
     Write-Action1Log "Preparing API request: $Method $uri" -Level DEBUG
+
+    # TRACE: Log complete request details
+    Write-Action1Log "Request endpoint: $Endpoint" -Level TRACE
+    Write-Action1Log "Request full URI: $uri" -Level TRACE
+    Write-Action1Log "Request method: $Method" -Level TRACE
     if ($QueryParameters) {
         Write-Action1Log "Query parameters" -Level TRACE -Data $QueryParameters
     }
-    
+
     $params = @{
         Uri = $uri
         Method = $Method
         Headers = $headers
         ErrorAction = 'Stop'
     }
-    
+
+    $bodyJson = $null
     if ($Body) {
         $bodyJson = ($Body | ConvertTo-Json -Depth 10)
         $params['Body'] = $bodyJson
-        Write-Action1Log "Request body" -Level TRACE -Data $Body
+        Write-Action1Log "Request body (raw JSON)" -Level TRACE
+        Write-Action1Log $bodyJson -Level TRACE
+        Write-Action1Log "Request body (parsed)" -Level TRACE -Data $Body
+    } else {
+        Write-Action1Log "Request body: (none)" -Level TRACE
     }
-    
+
+    # TRACE: Log complete request summary
+    Write-Action1Log "--- REQUEST SUMMARY ---" -Level TRACE
+    Write-Action1Log "$Method $uri" -Level TRACE
+    Write-Action1Log "Content-Type: application/json" -Level TRACE
+    Write-Action1Log "Body size: $(if ($bodyJson) { $bodyJson.Length } else { 0 }) bytes" -Level TRACE
+    Write-Action1Log "-----------------------" -Level TRACE
+
     try {
         Write-Action1Log "Executing API request..." -Level INFO
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-        
+
         $response = Invoke-RestMethod @params
-        
+
         $stopwatch.Stop()
         Write-Action1Log "API request completed successfully in $($stopwatch.ElapsedMilliseconds)ms" -Level INFO
+
+        # TRACE: Log complete response details
+        Write-Action1Log "--- RESPONSE SUMMARY ---" -Level TRACE
+        Write-Action1Log "Status: Success" -Level TRACE
+        Write-Action1Log "Duration: $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
+        $responseJson = $response | ConvertTo-Json -Depth 10 -Compress
+        Write-Action1Log "Response size: $($responseJson.Length) bytes" -Level TRACE
+        Write-Action1Log "------------------------" -Level TRACE
         Write-Action1Log "Response data" -Level TRACE -Data $response
-        
+
         return $response
     }
     catch {
@@ -3954,8 +4004,10 @@ function Remove-Action1App {
 # TODO: Add function Get-Action1Repo
 # TODO: Add function Get-Action1PackageVersion
 # TODO: Add function Update-Action1AppPackage
-# TODO: Add function Remove-Action1AppPackage
 # TODO: Add function Update-Action1AppRepo
+# TODO: Add function Remove-Action1AppPackage
+# TODO: Add function Remove-Action1AppRepo
+
 
 # Module initialization
 Write-Verbose "Action1.Tools module loaded"
