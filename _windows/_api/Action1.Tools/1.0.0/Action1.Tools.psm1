@@ -2359,7 +2359,8 @@ function New-Action1AppRepo {
 
     .DESCRIPTION
         Initializes a new directory structure for managing Action1 application deployments,
-        including folders for installers, scripts, and a manifest file.
+        including folders for installers, scripts, and a manifest file. Optionally creates
+        the software repository in Action1 via API.
 
     .PARAMETER AppName
         The name of the application.
@@ -2370,26 +2371,65 @@ function New-Action1AppRepo {
     .PARAMETER IncludeExamples
         If specified, includes example files and documentation.
 
+    .PARAMETER CreateInAction1
+        If specified, also creates the software repository in Action1 via API.
+
+    .PARAMETER OrganizationId
+        Action1 organization ID. Required if CreateInAction1 is specified.
+        If not provided, will prompt for it.
+
+    .PARAMETER Description
+        Description for the Action1 software repository.
+
+    .PARAMETER Publisher
+        Publisher/vendor name for the application.
+
+    .PARAMETER Version
+        Initial version number. Defaults to "1.0.0".
+
     .EXAMPLE
-        New-Action1AppRepo -AppName "7-Zip" -Path "C:\Apps"
+        New-Action1AppRepo -AppName "7-Zip"
+
+    .EXAMPLE
+        New-Action1AppRepo -AppName "PowerShell 7" -CreateInAction1 -OrganizationId "org_123"
+
+    .EXAMPLE
+        New-Action1AppRepo -AppName "Visual Studio Code" -CreateInAction1 -Publisher "Microsoft" -Description "Code editor"
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$AppName,
-        
+
         [Parameter()]
         [string]$Path = (Get-Location).Path,
-        
+
         [Parameter()]
-        [switch]$IncludeExamples
+        [switch]$IncludeExamples,
+
+        [Parameter()]
+        [switch]$CreateInAction1,
+
+        [Parameter()]
+        [string]$OrganizationId,
+
+        [Parameter()]
+        [string]$Description,
+
+        [Parameter()]
+        [string]$Publisher,
+
+        [Parameter()]
+        [string]$Version = "1.0.0"
     )
-    
+
     Write-Action1Log "Creating new Action1 app repository for: $AppName" -Level INFO
     Write-Action1Log "Base path: $Path" -Level DEBUG
     Write-Action1Log "Include examples: $IncludeExamples" -Level DEBUG
-    
-    $sanitizedName = $AppName -replace '[\\/:*?"<>|]', '_'
+    Write-Action1Log "Create in Action1: $CreateInAction1" -Level DEBUG
+
+    # Sanitize name: remove invalid chars and replace spaces with underscores
+    $sanitizedName = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
     Write-Action1Log "Sanitized app name: $sanitizedName" -Level DEBUG
     
     $repoPath = Join-Path $Path $sanitizedName
@@ -2413,12 +2453,12 @@ function New-Action1AppRepo {
         }
     }
     
-    # Create initial manifest
+    # Create initial manifest with provided parameters
     $manifest = [PSCustomObject]@{
         AppName = $AppName
-        Publisher = ""
-        Description = ""
-        Version = "1.0.0"
+        Publisher = if ($Publisher) { $Publisher } else { "" }
+        Description = if ($Description) { $Description } else { "" }
+        Version = $Version
         CreatedDate = Get-Date -Format "yyyy-MM-dd"
         LastModified = Get-Date -Format "yyyy-MM-dd"
         InstallerType = "msi"  # msi, exe, ps1
@@ -2437,7 +2477,7 @@ function New-Action1AppRepo {
             MinMemoryMB = 0
         }
         Action1Config = @{
-            OrganizationId = ""
+            OrganizationId = if ($OrganizationId) { $OrganizationId } else { "" }
             PackageId = ""
             PolicyId = ""
             DeploymentGroup = ""
@@ -2527,15 +2567,100 @@ Write-Host "Post-installation complete."
         $postInstallExample | Set-Content (Join-Path $repoPath "scripts" "post-install.ps1") -Force
         Write-Action1Log "Created post-install example script" -Level DEBUG
     }
-    
+
+    # Create software repository in Action1 if requested
+    $action1PackageId = $null
+    if ($CreateInAction1) {
+        Write-Action1Log "Creating software repository in Action1" -Level INFO
+        Write-Host "`n--- Creating Action1 Software Repository ---" -ForegroundColor Cyan
+
+        # Prompt for missing required information
+        if (-not $OrganizationId) {
+            # Try to get organizations list
+            try {
+                Write-Host "Fetching available organizations..." -ForegroundColor Gray
+                $orgsResponse = Invoke-Action1ApiRequest -Endpoint "organizations" -Method GET
+                $orgs = @($orgsResponse)
+
+                if ($orgs.Count -eq 0) {
+                    $OrganizationId = Read-Host "Enter Action1 Organization ID"
+                } elseif ($orgs.Count -eq 1) {
+                    $OrganizationId = $orgs[0].id
+                    Write-Host "Using organization: $($orgs[0].name) ($OrganizationId)" -ForegroundColor Green
+                } else {
+                    Write-Host "`nAvailable organizations:" -ForegroundColor Yellow
+                    for ($i = 0; $i -lt $orgs.Count; $i++) {
+                        Write-Host "  [$($i + 1)] $($orgs[$i].name) ($($orgs[$i].id))"
+                    }
+                    $selection = Read-Host "`nSelect organization (1-$($orgs.Count))"
+                    $selectedIndex = [int]$selection - 1
+                    if ($selectedIndex -ge 0 -and $selectedIndex -lt $orgs.Count) {
+                        $OrganizationId = $orgs[$selectedIndex].id
+                        Write-Host "Selected: $($orgs[$selectedIndex].name)" -ForegroundColor Green
+                    } else {
+                        throw "Invalid selection"
+                    }
+                }
+            }
+            catch {
+                Write-Action1Log "Failed to fetch organizations, prompting manually" -Level DEBUG
+                $OrganizationId = Read-Host "Enter Action1 Organization ID"
+            }
+        }
+
+        if (-not $Description) {
+            $Description = Read-Host "Enter description (optional, press Enter to skip)"
+        }
+
+        if (-not $Publisher) {
+            $Publisher = Read-Host "Enter publisher/vendor (optional, press Enter to skip)"
+        }
+
+        # Create the software repository package in Action1
+        try {
+            $packageData = @{
+                name = $AppName
+                description = if ($Description) { $Description } else { "Software repository for $AppName" }
+            }
+
+            Write-Action1Log "Creating software repository package" -Level DEBUG -Data $packageData
+
+            $createResponse = Invoke-Action1ApiRequest `
+                -Endpoint "software-repository/$OrganizationId" `
+                -Method POST `
+                -Body $packageData
+
+            $action1PackageId = $createResponse.id
+            Write-Action1Log "Software repository created: $action1PackageId" -Level INFO
+
+            # Update manifest with Action1 config
+            $manifest.Action1Config.OrganizationId = $OrganizationId
+            $manifest.Action1Config.PackageId = $action1PackageId
+            $manifest.Publisher = if ($Publisher) { $Publisher } else { $manifest.Publisher }
+            $manifest.Description = if ($Description) { $Description } else { $manifest.Description }
+            Write-ManifestFile -Manifest $manifest -Path $manifestPath
+
+            Write-Host "✓ Software repository created in Action1" -ForegroundColor Green
+            Write-Host "  Package ID: $action1PackageId" -ForegroundColor Cyan
+        }
+        catch {
+            Write-Action1Log "Failed to create software repository in Action1" -Level ERROR -ErrorRecord $_
+            Write-Host "✗ Failed to create Action1 software repository: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  You can create it manually later or retry with -CreateInAction1" -ForegroundColor Yellow
+        }
+    }
+
     Write-Action1Log "Repository creation completed successfully" -Level INFO
     Write-Host "`n✓ Action1 app repository created successfully!" -ForegroundColor Green
     Write-Host "Location: $repoPath" -ForegroundColor Cyan
+    if ($action1PackageId) {
+        Write-Host "Action1 Package ID: $action1PackageId" -ForegroundColor Cyan
+    }
     Write-Host "`nNext steps:" -ForegroundColor Yellow
     Write-Host "1. Place your installer in: $(Join-Path $repoPath 'installers')"
     Write-Host "2. Edit manifest.json to configure deployment settings"
     Write-Host "3. Run New-Action1AppPackage to prepare for deployment"
-    
+
     return $repoPath
 }
 
