@@ -42,12 +42,11 @@ $script:LogLevels = @{
 function Read-HostWithCompletion {
     <#
     .SYNOPSIS
-        Read-Host with fuzzy auto-completion support.
+        Read-Host with real-time tab auto-completion support.
 
     .DESCRIPTION
-        Provides an interactive prompt that supports tab completion and fuzzy matching
-        against a list of suggestions. If the user types a partial match and presses
-        Enter, it will auto-complete to the best match.
+        Provides an interactive prompt that supports tab completion against a list
+        of suggestions. Press Tab to cycle through matches, Enter to confirm.
 
     .PARAMETER Prompt
         The prompt text to display.
@@ -79,70 +78,97 @@ function Read-HostWithCompletion {
     # Show available suggestions if any exist
     if ($Suggestions.Count -gt 0) {
         Write-Host "  Available: $($Suggestions -join ', ')" -ForegroundColor DarkGray
-    }
-
-    # Build prompt string
-    $promptText = $Prompt
-    if ($Default) {
-        $promptText = "$Prompt (default: $Default)"
+        Write-Host "  (Tab to complete, Enter to confirm)" -ForegroundColor DarkGray
     }
 
     do {
-        $userInput = Read-Host $promptText
-
-        # If empty, use default
-        if (-not $userInput -and $Default) {
-            return $Default
+        # Build and display prompt
+        $promptText = $Prompt
+        if ($Default) {
+            $promptText = "$Prompt (default: $Default)"
         }
+        Write-Host "${promptText}: " -NoNewline
 
-        # If empty and required, prompt again
-        if (-not $userInput -and $Required) {
-            Write-Host "  This field is required." -ForegroundColor Yellow
-            continue
+        $currentInput = ""
+        $tabIndex = -1
+        $tabMatches = @()
+
+        while ($true) {
+            $key = [Console]::ReadKey($true)
+
+            switch ($key.Key) {
+                'Enter' {
+                    Write-Host ""  # New line
+
+                    # If empty, use default
+                    if (-not $currentInput -and $Default) {
+                        return $Default
+                    }
+
+                    # If empty and required, break to re-prompt
+                    if (-not $currentInput -and $Required) {
+                        Write-Host "  This field is required." -ForegroundColor Yellow
+                        break
+                    }
+
+                    return $currentInput
+                }
+
+                'Tab' {
+                    if ($Suggestions.Count -eq 0) { continue }
+
+                    # Find matches on first Tab press
+                    if ($tabIndex -eq -1) {
+                        $tabMatches = @($Suggestions | Where-Object { $_ -like "$currentInput*" })
+                        if ($tabMatches.Count -eq 0) {
+                            $tabMatches = @($Suggestions | Where-Object { $_ -like "*$currentInput*" })
+                        }
+                    }
+
+                    if ($tabMatches.Count -gt 0) {
+                        $tabIndex = ($tabIndex + 1) % $tabMatches.Count
+
+                        # Clear and replace with match
+                        Write-Host ("`b" * $currentInput.Length) -NoNewline
+                        Write-Host (" " * $currentInput.Length) -NoNewline
+                        Write-Host ("`b" * $currentInput.Length) -NoNewline
+
+                        $currentInput = $tabMatches[$tabIndex]
+                        Write-Host $currentInput -NoNewline -ForegroundColor Cyan
+                    }
+                }
+
+                'Backspace' {
+                    if ($currentInput.Length -gt 0) {
+                        $currentInput = $currentInput.Substring(0, $currentInput.Length - 1)
+                        Write-Host "`b `b" -NoNewline
+                        $tabIndex = -1
+                    }
+                }
+
+                'Escape' {
+                    Write-Host ("`b" * $currentInput.Length) -NoNewline
+                    Write-Host (" " * $currentInput.Length) -NoNewline
+                    Write-Host ("`b" * $currentInput.Length) -NoNewline
+                    $currentInput = ""
+                    $tabIndex = -1
+                }
+
+                default {
+                    $char = $key.KeyChar
+                    if ([char]::IsLetterOrDigit($char) -or $char -eq ' ' -or $char -eq '-' -or $char -eq '_' -or $char -eq '.') {
+                        $currentInput += $char
+                        Write-Host $char -NoNewline
+                        $tabIndex = -1
+                    }
+                }
+            }
+
+            if ($key.Key -eq 'Enter') { break }
         }
+    } while ($Required -and -not $currentInput)
 
-        # If empty and not required, return empty
-        if (-not $userInput) {
-            return $userInput
-        }
-
-        # Try fuzzy match against suggestions
-        if ($Suggestions.Count -gt 0) {
-            # Exact match (case-insensitive)
-            $exactMatch = $Suggestions | Where-Object { $_ -eq $userInput }
-            if ($exactMatch) {
-                return $exactMatch
-            }
-
-            # Prefix match (case-insensitive)
-            $prefixMatches = $Suggestions | Where-Object { $_ -like "$userInput*" }
-            if ($prefixMatches.Count -eq 1) {
-                Write-Host "  → $($prefixMatches[0])" -ForegroundColor Green
-                return $prefixMatches[0]
-            }
-            elseif ($prefixMatches.Count -gt 1) {
-                Write-Host "  Multiple matches: $($prefixMatches -join ', ')" -ForegroundColor Yellow
-                Write-Host "  Please be more specific or select from above." -ForegroundColor Yellow
-                continue
-            }
-
-            # Contains match (fuzzy)
-            $fuzzyMatches = $Suggestions | Where-Object { $_ -like "*$userInput*" }
-            if ($fuzzyMatches.Count -eq 1) {
-                Write-Host "  → $($fuzzyMatches[0])" -ForegroundColor Green
-                return $fuzzyMatches[0]
-            }
-            elseif ($fuzzyMatches.Count -gt 1) {
-                Write-Host "  Multiple matches: $($fuzzyMatches -join ', ')" -ForegroundColor Yellow
-                Write-Host "  Please be more specific or select from above." -ForegroundColor Yellow
-                continue
-            }
-        }
-
-        # No match found, return as-is (new value)
-        return $userInput
-
-    } while ($true)
+    return $currentInput
 }
 
 function Get-ExistingVendors {
