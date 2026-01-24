@@ -37,6 +37,178 @@ $script:LogLevels = @{
     SILENT = 5
 }
 
+#region Helper Functions
+
+function Read-HostWithCompletion {
+    <#
+    .SYNOPSIS
+        Read-Host with fuzzy auto-completion support.
+
+    .DESCRIPTION
+        Provides an interactive prompt that supports tab completion and fuzzy matching
+        against a list of suggestions. If the user types a partial match and presses
+        Enter, it will auto-complete to the best match.
+
+    .PARAMETER Prompt
+        The prompt text to display.
+
+    .PARAMETER Suggestions
+        Array of strings to use for auto-completion.
+
+    .PARAMETER Default
+        Default value if user presses Enter without input.
+
+    .PARAMETER Required
+        If true, will keep prompting until a value is provided.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Prompt,
+
+        [Parameter()]
+        [string[]]$Suggestions = @(),
+
+        [Parameter()]
+        [string]$Default,
+
+        [Parameter()]
+        [switch]$Required
+    )
+
+    # Show available suggestions if any exist
+    if ($Suggestions.Count -gt 0) {
+        Write-Host "  Available: $($Suggestions -join ', ')" -ForegroundColor DarkGray
+    }
+
+    # Build prompt string
+    $promptText = $Prompt
+    if ($Default) {
+        $promptText = "$Prompt (default: $Default)"
+    }
+
+    do {
+        $userInput = Read-Host $promptText
+
+        # If empty, use default
+        if (-not $userInput -and $Default) {
+            return $Default
+        }
+
+        # If empty and required, prompt again
+        if (-not $userInput -and $Required) {
+            Write-Host "  This field is required." -ForegroundColor Yellow
+            continue
+        }
+
+        # If empty and not required, return empty
+        if (-not $userInput) {
+            return $userInput
+        }
+
+        # Try fuzzy match against suggestions
+        if ($Suggestions.Count -gt 0) {
+            # Exact match (case-insensitive)
+            $exactMatch = $Suggestions | Where-Object { $_ -eq $userInput }
+            if ($exactMatch) {
+                return $exactMatch
+            }
+
+            # Prefix match (case-insensitive)
+            $prefixMatches = $Suggestions | Where-Object { $_ -like "$userInput*" }
+            if ($prefixMatches.Count -eq 1) {
+                Write-Host "  → $($prefixMatches[0])" -ForegroundColor Green
+                return $prefixMatches[0]
+            }
+            elseif ($prefixMatches.Count -gt 1) {
+                Write-Host "  Multiple matches: $($prefixMatches -join ', ')" -ForegroundColor Yellow
+                Write-Host "  Please be more specific or select from above." -ForegroundColor Yellow
+                continue
+            }
+
+            # Contains match (fuzzy)
+            $fuzzyMatches = $Suggestions | Where-Object { $_ -like "*$userInput*" }
+            if ($fuzzyMatches.Count -eq 1) {
+                Write-Host "  → $($fuzzyMatches[0])" -ForegroundColor Green
+                return $fuzzyMatches[0]
+            }
+            elseif ($fuzzyMatches.Count -gt 1) {
+                Write-Host "  Multiple matches: $($fuzzyMatches -join ', ')" -ForegroundColor Yellow
+                Write-Host "  Please be more specific or select from above." -ForegroundColor Yellow
+                continue
+            }
+        }
+
+        # No match found, return as-is (new value)
+        return $userInput
+
+    } while ($true)
+}
+
+function Get-ExistingVendors {
+    <#
+    .SYNOPSIS
+        Gets list of existing vendor folders for auto-completion.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [string]$BasePath = (Get-Location).Path
+    )
+
+    if (Test-Path $BasePath) {
+        Get-ChildItem -Path $BasePath -Directory -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name
+    }
+}
+
+function Get-ExistingApps {
+    <#
+    .SYNOPSIS
+        Gets list of existing app folders under a vendor for auto-completion.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$BasePath,
+
+        [Parameter(Mandatory)]
+        [string]$Vendor
+    )
+
+    $vendorPath = Join-Path $BasePath $Vendor
+    if (Test-Path $vendorPath) {
+        Get-ChildItem -Path $vendorPath -Directory -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name
+    }
+}
+
+function Get-ExistingVersions {
+    <#
+    .SYNOPSIS
+        Gets list of existing version folders under an app for auto-completion.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$BasePath,
+
+        [Parameter(Mandatory)]
+        [string]$Vendor,
+
+        [Parameter(Mandatory)]
+        [string]$AppName
+    )
+
+    $appPath = Join-Path $BasePath $Vendor $AppName
+    if (Test-Path $appPath) {
+        Get-ChildItem -Path $appPath -Directory -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name
+    }
+}
+
+#endregion Helper Functions
+
 #region Logging Functions
 
 function Write-Action1Log {
@@ -2358,18 +2530,28 @@ function New-Action1AppRepo {
         Creates a new Action1 application repository structure.
 
     .DESCRIPTION
-        Initializes a new directory structure for managing Action1 application deployments,
-        including folders for installers, scripts, and a manifest file. Optionally creates
-        the software repository in Action1 via API.
+        Initializes a new directory structure for managing Action1 application deployments
+        in Vendor/AppName/Version format. Includes folders for installers, scripts, and
+        a manifest file. Optionally creates the software repository in Action1 via API.
+
+        If parameters are not provided, the function will prompt interactively.
 
     .PARAMETER AppName
-        The name of the application.
+        The name of the application. If not provided, will prompt for it.
+
+    .PARAMETER Publisher
+        Publisher/vendor name for the application. Required - will prompt if not provided.
+        Used for both the folder structure and Action1 API.
+
+    .PARAMETER Version
+        Version number. If not provided, will prompt (defaults to "1.0.0").
 
     .PARAMETER Path
-        The path where the repository should be created. Defaults to current directory.
+        The base path where the repository should be created. Defaults to current directory.
+        The full path will be: Path/Vendor/AppName/Version
 
     .PARAMETER IncludeExamples
-        If specified, includes example files and documentation.
+        If specified, includes example pre/post install scripts.
 
     .PARAMETER CreateInAction1
         If specified, also creates the software repository in Action1 via API.
@@ -2381,31 +2563,21 @@ function New-Action1AppRepo {
     .PARAMETER Description
         Description for the Action1 software repository.
 
-    .PARAMETER Publisher
-        Publisher/vendor name for the application. Required when using -CreateInAction1.
-        If not provided, will prompt for it.
-
-    .PARAMETER Version
-        Initial version number. Defaults to "1.0.0".
+    .EXAMPLE
+        New-Action1AppRepo
+        # Interactive mode - prompts for Vendor, AppName, and Version
 
     .EXAMPLE
-        New-Action1AppRepo -AppName "7-Zip"
+        New-Action1AppRepo -Publisher "Microsoft" -AppName "PowerShell" -Version "7.4.0"
+        # Creates: ./Microsoft/PowerShell/7.4.0/
 
     .EXAMPLE
-        New-Action1AppRepo -AppName "PowerShell 7" -CreateInAction1
-        # Will prompt for scope (defaults to "all" organizations)
-
-    .EXAMPLE
-        New-Action1AppRepo -AppName "PowerShell 7" -CreateInAction1 -OrganizationId "all"
-        # Explicitly use all organizations scope
-
-    .EXAMPLE
-        New-Action1AppRepo -AppName "Visual Studio Code" -CreateInAction1 -OrganizationId "org_123" -Publisher "Microsoft" -Description "Code editor"
-        # Use specific organization
+        New-Action1AppRepo -Publisher "7-Zip" -AppName "7-Zip" -Version "23.01" -CreateInAction1
+        # Creates local folder and Action1 software repository
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter()]
         [string]$AppName,
 
         [Parameter()]
@@ -2427,19 +2599,67 @@ function New-Action1AppRepo {
         [string]$Publisher,
 
         [Parameter()]
-        [string]$Version = "1.0.0"
+        [string]$Version
     )
 
-    Write-Action1Log "Creating new Action1 app repository for: $AppName" -Level INFO
-    Write-Action1Log "Base path: $Path" -Level DEBUG
-    Write-Action1Log "Include examples: $IncludeExamples" -Level DEBUG
-    Write-Action1Log "Create in Action1: $CreateInAction1" -Level DEBUG
+    Write-Host "`n--- New Action1 App Repository ---" -ForegroundColor Cyan
 
-    # Sanitize name: remove invalid chars and replace spaces with underscores
-    $sanitizedName = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
-    Write-Action1Log "Sanitized app name: $sanitizedName" -Level DEBUG
-    
-    $repoPath = Join-Path $Path $sanitizedName
+    # Get existing folders for auto-completion suggestions
+    $existingVendors = @(Get-ExistingVendors -BasePath $Path)
+
+    # Prompt for required information if not provided (with fuzzy auto-completion)
+    if (-not $Publisher) {
+        $Publisher = Read-HostWithCompletion `
+            -Prompt "Enter Vendor/Publisher" `
+            -Suggestions $existingVendors `
+            -Required
+        if (-not $Publisher) {
+            throw "Vendor/Publisher is required"
+        }
+    }
+
+    # Sanitize vendor for folder lookup
+    $sanitizedVendorForLookup = $Publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $existingApps = @(Get-ExistingApps -BasePath $Path -Vendor $sanitizedVendorForLookup)
+
+    if (-not $AppName) {
+        $AppName = Read-HostWithCompletion `
+            -Prompt "Enter Application Name" `
+            -Suggestions $existingApps `
+            -Required
+        if (-not $AppName) {
+            throw "Application Name is required"
+        }
+    }
+
+    # Sanitize app name for folder lookup
+    $sanitizedAppForLookup = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $existingVersions = @(Get-ExistingVersions -BasePath $Path -Vendor $sanitizedVendorForLookup -AppName $sanitizedAppForLookup)
+
+    if (-not $Version) {
+        $Version = Read-HostWithCompletion `
+            -Prompt "Enter Version" `
+            -Suggestions $existingVersions `
+            -Default "1.0.0"
+    }
+
+    Write-Action1Log "Creating new Action1 app repository" -Level INFO
+    Write-Action1Log "Vendor: $Publisher" -Level DEBUG
+    Write-Action1Log "App Name: $AppName" -Level DEBUG
+    Write-Action1Log "Version: $Version" -Level DEBUG
+    Write-Action1Log "Base path: $Path" -Level DEBUG
+
+    # Sanitize names: remove invalid chars and replace spaces with underscores
+    $sanitizedVendor = $Publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $sanitizedAppName = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $sanitizedVersion = $Version -replace '[\\/:*?"<>|]', '_'
+
+    Write-Action1Log "Sanitized vendor: $sanitizedVendor" -Level DEBUG
+    Write-Action1Log "Sanitized app name: $sanitizedAppName" -Level DEBUG
+    Write-Action1Log "Sanitized version: $sanitizedVersion" -Level DEBUG
+
+    # Build path: Vendor/AppName/Version
+    $repoPath = Join-Path $Path $sanitizedVendor $sanitizedAppName $sanitizedVersion
     Write-Action1Log "Repository path: $repoPath" -Level INFO
     
     # Create directory structure
@@ -2679,14 +2899,17 @@ Write-Host "Post-installation complete."
 
     Write-Action1Log "Repository creation completed successfully" -Level INFO
     Write-Host "`n✓ Action1 app repository created successfully!" -ForegroundColor Green
-    Write-Host "Location: $repoPath" -ForegroundColor Cyan
+    Write-Host "  Vendor:   $Publisher" -ForegroundColor White
+    Write-Host "  App:      $AppName" -ForegroundColor White
+    Write-Host "  Version:  $Version" -ForegroundColor White
+    Write-Host "  Location: $repoPath" -ForegroundColor Cyan
     if ($action1PackageId) {
-        Write-Host "Action1 Package ID: $action1PackageId" -ForegroundColor Cyan
+        Write-Host "  Action1 Package ID: $action1PackageId" -ForegroundColor Cyan
     }
     Write-Host "`nNext steps:" -ForegroundColor Yellow
     Write-Host "1. Place your installer in: $(Join-Path $repoPath 'installers')"
     Write-Host "2. Edit manifest.json to configure deployment settings"
-    Write-Host "3. Run New-Action1AppPackage to prepare for deployment"
+    Write-Host "3. Run Deploy-Action1App to deploy"
 
     return $repoPath
 }
@@ -4192,6 +4415,53 @@ if (Test-Path $credPath) {
     }
     catch {
         Write-Verbose "Could not load saved credentials"
+    }
+}
+
+# Register argument completers for tab completion
+Register-ArgumentCompleter -CommandName New-Action1AppRepo -ParameterName Publisher -ScriptBlock {
+    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+
+    $basePath = if ($fakeBoundParameters.ContainsKey('Path')) { $fakeBoundParameters['Path'] } else { (Get-Location).Path }
+    $vendors = Get-ExistingVendors -BasePath $basePath
+
+    $vendors | Where-Object { $_ -like "*$wordToComplete*" } | ForEach-Object {
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+    }
+}
+
+Register-ArgumentCompleter -CommandName New-Action1AppRepo -ParameterName AppName -ScriptBlock {
+    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+
+    $basePath = if ($fakeBoundParameters.ContainsKey('Path')) { $fakeBoundParameters['Path'] } else { (Get-Location).Path }
+    $vendor = if ($fakeBoundParameters.ContainsKey('Publisher')) {
+        $fakeBoundParameters['Publisher'] -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    } else { $null }
+
+    if ($vendor) {
+        $apps = Get-ExistingApps -BasePath $basePath -Vendor $vendor
+        $apps | Where-Object { $_ -like "*$wordToComplete*" } | ForEach-Object {
+            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+        }
+    }
+}
+
+Register-ArgumentCompleter -CommandName New-Action1AppRepo -ParameterName Version -ScriptBlock {
+    param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+
+    $basePath = if ($fakeBoundParameters.ContainsKey('Path')) { $fakeBoundParameters['Path'] } else { (Get-Location).Path }
+    $vendor = if ($fakeBoundParameters.ContainsKey('Publisher')) {
+        $fakeBoundParameters['Publisher'] -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    } else { $null }
+    $appName = if ($fakeBoundParameters.ContainsKey('AppName')) {
+        $fakeBoundParameters['AppName'] -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    } else { $null }
+
+    if ($vendor -and $appName) {
+        $versions = Get-ExistingVersions -BasePath $basePath -Vendor $vendor -AppName $appName
+        $versions | Where-Object { $_ -like "*$wordToComplete*" } | ForEach-Object {
+            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+        }
     }
 }
 
