@@ -29,12 +29,14 @@ $script:Action1ConfigDir = if ($IsWindows) {
     Join-Path $xdgConfig "action1"
 }
 $script:LogLevels = @{
-    TRACE = 0
-    DEBUG = 1
-    INFO = 2
-    WARN = 3
-    ERROR = 4
-    SILENT = 5
+
+    SILENT = 0
+    INFO = 1
+    WARN = 2
+    ERROR = 3
+    DEBUG = 4
+    TRACE = 5
+
 }
 
 #region Helper Functions
@@ -96,75 +98,75 @@ function Read-HostWithCompletion {
         while ($true) {
             $key = [Console]::ReadKey($true)
 
-            switch ($key.Key) {
-                'Enter' {
-                    Write-Host ""  # New line
+            # Check for Tab character (handles cross-platform differences)
+            $isTab = ($key.Key -eq 'Tab') -or ($key.KeyChar -eq "`t")
+            $isEnter = ($key.Key -eq 'Enter') -or ($key.KeyChar -eq "`r") -or ($key.KeyChar -eq "`n")
+            $isBackspace = ($key.Key -eq 'Backspace') -or ($key.KeyChar -eq [char]8) -or ($key.KeyChar -eq [char]127)
+            $isEscape = ($key.Key -eq 'Escape') -or ($key.KeyChar -eq [char]27)
 
-                    # If empty, use default
-                    if (-not $currentInput -and $Default) {
-                        return $Default
-                    }
+            if ($isEnter) {
+                Write-Host ""  # New line
 
-                    # If empty and required, break to re-prompt
-                    if (-not $currentInput -and $Required) {
-                        Write-Host "  This field is required." -ForegroundColor Yellow
-                        break
-                    }
-
-                    return $currentInput
+                # If empty, use default
+                if (-not $currentInput -and $Default) {
+                    return $Default
                 }
 
-                'Tab' {
-                    if ($Suggestions.Count -eq 0) { continue }
+                # If empty and required, break to re-prompt
+                if (-not $currentInput -and $Required) {
+                    Write-Host "  This field is required." -ForegroundColor Yellow
+                    break
+                }
 
-                    # Find matches on first Tab press
-                    if ($tabIndex -eq -1) {
-                        $tabMatches = @($Suggestions | Where-Object { $_ -like "$currentInput*" })
-                        if ($tabMatches.Count -eq 0) {
-                            $tabMatches = @($Suggestions | Where-Object { $_ -like "*$currentInput*" })
-                        }
-                    }
+                return $currentInput
+            }
+            elseif ($isTab) {
+                if ($Suggestions.Count -eq 0) { continue }
 
-                    if ($tabMatches.Count -gt 0) {
-                        $tabIndex = ($tabIndex + 1) % $tabMatches.Count
-
-                        # Clear and replace with match
-                        Write-Host ("`b" * $currentInput.Length) -NoNewline
-                        Write-Host (" " * $currentInput.Length) -NoNewline
-                        Write-Host ("`b" * $currentInput.Length) -NoNewline
-
-                        $currentInput = $tabMatches[$tabIndex]
-                        Write-Host $currentInput -NoNewline -ForegroundColor Cyan
+                # Find matches on first Tab press
+                if ($tabIndex -eq -1) {
+                    $tabMatches = @($Suggestions | Where-Object { $_ -like "$currentInput*" })
+                    if ($tabMatches.Count -eq 0) {
+                        $tabMatches = @($Suggestions | Where-Object { $_ -like "*$currentInput*" })
                     }
                 }
 
-                'Backspace' {
-                    if ($currentInput.Length -gt 0) {
-                        $currentInput = $currentInput.Substring(0, $currentInput.Length - 1)
-                        Write-Host "`b `b" -NoNewline
-                        $tabIndex = -1
-                    }
-                }
+                if ($tabMatches.Count -gt 0) {
+                    $tabIndex = ($tabIndex + 1) % $tabMatches.Count
 
-                'Escape' {
+                    # Clear and replace with match
                     Write-Host ("`b" * $currentInput.Length) -NoNewline
                     Write-Host (" " * $currentInput.Length) -NoNewline
                     Write-Host ("`b" * $currentInput.Length) -NoNewline
-                    $currentInput = ""
+
+                    $currentInput = $tabMatches[$tabIndex]
+                    Write-Host $currentInput -NoNewline -ForegroundColor Cyan
+                }
+            }
+            elseif ($isBackspace) {
+                if ($currentInput.Length -gt 0) {
+                    $currentInput = $currentInput.Substring(0, $currentInput.Length - 1)
+                    Write-Host "`b `b" -NoNewline
                     $tabIndex = -1
                 }
-
-                default {
-                    $char = $key.KeyChar
-                    if ([char]::IsLetterOrDigit($char) -or $char -eq ' ' -or $char -eq '-' -or $char -eq '_' -or $char -eq '.') {
-                        $currentInput += $char
-                        Write-Host $char -NoNewline
-                        $tabIndex = -1
-                    }
+            }
+            elseif ($isEscape) {
+                Write-Host ("`b" * $currentInput.Length) -NoNewline
+                Write-Host (" " * $currentInput.Length) -NoNewline
+                Write-Host ("`b" * $currentInput.Length) -NoNewline
+                $currentInput = ""
+                $tabIndex = -1
+            }
+            else {
+                $char = $key.KeyChar
+                if ([char]::IsLetterOrDigit($char) -or $char -eq ' ' -or $char -eq '-' -or $char -eq '_' -or $char -eq '.') {
+                    $currentInput += $char
+                    Write-Host $char -NoNewline
+                    $tabIndex = -1
                 }
             }
 
-            if ($key.Key -eq 'Enter') { break }
+            if ($isEnter) { break }
         }
     } while ($Required -and -not $currentInput)
 
@@ -212,123 +214,123 @@ function Read-HostWithFileCompletion {
     while ($true) {
         $key = [Console]::ReadKey($true)
 
-        switch ($key.Key) {
-            'Enter' {
-                Write-Host ""  # New line
+        # Check for special keys (handles cross-platform differences)
+        $isTab = ($key.Key -eq 'Tab') -or ($key.KeyChar -eq "`t")
+        $isEnter = ($key.Key -eq 'Enter') -or ($key.KeyChar -eq "`r") -or ($key.KeyChar -eq "`n")
+        $isBackspace = ($key.Key -eq 'Backspace') -or ($key.KeyChar -eq [char]8) -or ($key.KeyChar -eq [char]127)
+        $isEscape = ($key.Key -eq 'Escape') -or ($key.KeyChar -eq [char]27)
 
-                if (-not $currentInput) {
-                    return ""
-                }
+        if ($isEnter) {
+            Write-Host ""  # New line
 
-                # Resolve relative path to absolute
-                if (-not [System.IO.Path]::IsPathRooted($currentInput)) {
-                    $resolvedPath = Join-Path $BasePath $currentInput
-                } else {
-                    $resolvedPath = $currentInput
-                }
-
-                # Normalize the path
-                try {
-                    $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath)
-                } catch {
-                    # Keep as-is if resolution fails
-                }
-
-                return $resolvedPath
+            if (-not $currentInput) {
+                return ""
             }
 
-            'Tab' {
-                # Build path for completion
-                $searchPath = $currentInput
+            # Resolve relative path to absolute
+            if (-not [System.IO.Path]::IsPathRooted($currentInput)) {
+                $resolvedPath = Join-Path $BasePath $currentInput
+            } else {
+                $resolvedPath = $currentInput
+            }
 
-                # Resolve relative paths
-                if (-not [System.IO.Path]::IsPathRooted($searchPath)) {
-                    $searchPath = Join-Path $BasePath $currentInput
+            # Normalize the path
+            try {
+                $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath)
+            } catch {
+                # Keep as-is if resolution fails
+            }
+
+            return $resolvedPath
+        }
+        elseif ($isTab) {
+            # Build path for completion
+            $searchPath = $currentInput
+
+            # Resolve relative paths
+            if (-not [System.IO.Path]::IsPathRooted($searchPath)) {
+                $searchPath = Join-Path $BasePath $currentInput
+            }
+
+            # Check if input changed since last Tab
+            if ($currentInput -ne $lastTabInput) {
+                $tabIndex = -1
+                $lastTabInput = $currentInput
+
+                # Determine directory and file pattern
+                $parentDir = Split-Path $searchPath -Parent
+                $filePattern = Split-Path $searchPath -Leaf
+
+                if (-not $parentDir) {
+                    $parentDir = $BasePath
                 }
 
-                # Check if input changed since last Tab
-                if ($currentInput -ne $lastTabInput) {
-                    $tabIndex = -1
-                    $lastTabInput = $currentInput
-
-                    # Determine directory and file pattern
-                    $parentDir = Split-Path $searchPath -Parent
-                    $filePattern = Split-Path $searchPath -Leaf
-
-                    if (-not $parentDir) {
-                        $parentDir = $BasePath
-                    }
-
-                    # Get matches
-                    if (Test-Path $parentDir -PathType Container) {
-                        $tabMatches = @(Get-ChildItem -Path $parentDir -Filter "$filePattern*" -ErrorAction SilentlyContinue |
-                            Where-Object {
-                                $_.PSIsContainer -or
-                                $_.Extension -in @('.exe', '.msi') -or
-                                $Filter -eq "*"
-                            } |
-                            ForEach-Object {
-                                # Return relative path from BasePath
-                                $fullPath = $_.FullName
-                                if ($fullPath.StartsWith($BasePath)) {
-                                    $relativePath = $fullPath.Substring($BasePath.Length).TrimStart([IO.Path]::DirectorySeparatorChar)
-                                    if ($_.PSIsContainer) {
-                                        $relativePath + [IO.Path]::DirectorySeparatorChar
-                                    } else {
-                                        $relativePath
-                                    }
+                # Get matches
+                if (Test-Path $parentDir -PathType Container) {
+                    $tabMatches = @(Get-ChildItem -Path $parentDir -Filter "$filePattern*" -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $_.PSIsContainer -or
+                            $_.Extension -in @('.exe', '.msi') -or
+                            $Filter -eq "*"
+                        } |
+                        ForEach-Object {
+                            # Return relative path from BasePath
+                            $fullPath = $_.FullName
+                            if ($fullPath.StartsWith($BasePath)) {
+                                $relativePath = $fullPath.Substring($BasePath.Length).TrimStart([IO.Path]::DirectorySeparatorChar)
+                                if ($_.PSIsContainer) {
+                                    $relativePath + [IO.Path]::DirectorySeparatorChar
                                 } else {
-                                    if ($_.PSIsContainer) {
-                                        $fullPath + [IO.Path]::DirectorySeparatorChar
-                                    } else {
-                                        $fullPath
-                                    }
+                                    $relativePath
                                 }
-                            })
-                    } else {
-                        $tabMatches = @()
-                    }
-                }
-
-                if ($tabMatches.Count -gt 0) {
-                    $tabIndex = ($tabIndex + 1) % $tabMatches.Count
-
-                    # Clear current input
-                    Write-Host ("`b" * $currentInput.Length) -NoNewline
-                    Write-Host (" " * $currentInput.Length) -NoNewline
-                    Write-Host ("`b" * $currentInput.Length) -NoNewline
-
-                    $currentInput = $tabMatches[$tabIndex]
-                    $lastTabInput = $currentInput
-                    Write-Host $currentInput -NoNewline -ForegroundColor Cyan
+                            } else {
+                                if ($_.PSIsContainer) {
+                                    $fullPath + [IO.Path]::DirectorySeparatorChar
+                                } else {
+                                    $fullPath
+                                }
+                            }
+                        })
+                } else {
+                    $tabMatches = @()
                 }
             }
 
-            'Backspace' {
-                if ($currentInput.Length -gt 0) {
-                    $currentInput = $currentInput.Substring(0, $currentInput.Length - 1)
-                    Write-Host "`b `b" -NoNewline
-                    $tabIndex = -1
-                }
-            }
+            if ($tabMatches.Count -gt 0) {
+                $tabIndex = ($tabIndex + 1) % $tabMatches.Count
 
-            'Escape' {
+                # Clear current input
                 Write-Host ("`b" * $currentInput.Length) -NoNewline
                 Write-Host (" " * $currentInput.Length) -NoNewline
                 Write-Host ("`b" * $currentInput.Length) -NoNewline
-                $currentInput = ""
+
+                $currentInput = $tabMatches[$tabIndex]
+                $lastTabInput = $currentInput
+                Write-Host $currentInput -NoNewline -ForegroundColor Cyan
+            }
+        }
+        elseif ($isBackspace) {
+            if ($currentInput.Length -gt 0) {
+                $currentInput = $currentInput.Substring(0, $currentInput.Length - 1)
+                Write-Host "`b `b" -NoNewline
                 $tabIndex = -1
             }
-
-            default {
-                $char = $key.KeyChar
-                # Allow path characters including :, /, \, ., -, _, spaces
-                if ([char]::IsLetterOrDigit($char) -or
-                    $char -in @(' ', '-', '_', '.', '/', '\', ':', '(', ')')) {
-                    $currentInput += $char
-                    Write-Host $char -NoNewline
-                    $tabIndex = -1
-                }
+        }
+        elseif ($isEscape) {
+            Write-Host ("`b" * $currentInput.Length) -NoNewline
+            Write-Host (" " * $currentInput.Length) -NoNewline
+            Write-Host ("`b" * $currentInput.Length) -NoNewline
+            $currentInput = ""
+            $tabIndex = -1
+        }
+        else {
+            $char = $key.KeyChar
+            # Allow path characters including :, /, \, ., -, _, spaces
+            if ([char]::IsLetterOrDigit($char) -or
+                $char -in @(' ', '-', '_', '.', '/', '\', ':', '(', ')')) {
+                $currentInput += $char
+                Write-Host $char -NoNewline
+                $tabIndex = -1
             }
         }
     }
@@ -537,12 +539,14 @@ function Write-Action1Log {
     
     # Determine file log level (one level more verbose than console)
     $fileLogLevel = switch ($script:LogLevel) {
+
         'SILENT' { 'INFO' }
-        'ERROR'  { 'WARN' }
-        'WARN'   { 'INFO' }
-        'INFO'   { 'DEBUG' }
+        'INFO'   { 'WARN' }
+        'WARN'   { 'ERROR' }
+        'ERROR'  { 'BEBUG' }
         'DEBUG'  { 'TRACE' }
         'TRACE'  { 'TRACE' }
+
     }
 
     # Check if this message should be shown on console or written to file
@@ -834,7 +838,7 @@ function Invoke-Action1FileUpload {
         [string]$Endpoint,
         
         [Parameter()]
-        [int]$ChunkSizeMB = 5,
+        [int]$ChunkSizeMB = 32,
         
         [Parameter()]
         [hashtable]$AdditionalData
@@ -852,8 +856,8 @@ function Invoke-Action1FileUpload {
     
     Write-Action1Log "File size: $(ConvertTo-FileSize -Bytes $fileSize)" -Level DEBUG
     
-    # For small files (< 10MB), upload directly
-    if ($fileSize -lt (10 * 1024 * 1024)) {
+    # For small files (< 32MB), upload directly
+    if ($fileSize -lt (32 * 1024 * 1024)) {
         Write-Action1Log "File is small, uploading directly without chunking" -Level DEBUG
         return Invoke-Action1DirectUpload -FilePath $FilePath -Endpoint $Endpoint -AdditionalData $AdditionalData
     }
@@ -1323,9 +1327,884 @@ function Invoke-Action1ChunkedUploadSequential {
     }
 }
 
+#region Software Repository API Functions
+
+function Get-Action1SoftwareRepositories {
+    <#
+    .SYNOPSIS
+        Lists custom software repositories from Action1.
+
+    .DESCRIPTION
+        Retrieves a list of custom software repositories for the specified organization.
+
+    .PARAMETER OrganizationId
+        The organization ID (or "all" for enterprise-wide).
+
+    .OUTPUTS
+        Returns an array of repository objects with id, name, vendor, platform properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OrganizationId
+    )
+
+    Write-Action1Log "Fetching custom software repositories..." -Level INFO
+
+    $token = Get-Action1AccessToken
+    $uri = "$script:Action1BaseUri/software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100"
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Method GET -Headers @{
+            'Authorization' = "Bearer $token"
+            'Content-Type'  = 'application/json'
+            'Accept'        = 'application/json'
+        } -ErrorAction Stop
+
+        $items = if ($response.items) { $response.items } else { @() }
+        Write-Action1Log "Found $($items.Count) custom repositories" -Level INFO
+        return $items
+    }
+    catch {
+        Write-Action1Log "Failed to list repositories" -Level ERROR -ErrorRecord $_
+        throw
+    }
+}
+
+function New-Action1SoftwareRepository {
+    <#
+    .SYNOPSIS
+        Creates a new software repository in Action1.
+
+    .DESCRIPTION
+        Creates a custom software repository with the specified properties.
+
+    .PARAMETER OrganizationId
+        The organization ID (or "all" for enterprise-wide).
+
+    .PARAMETER Name
+        The repository name.
+
+    .PARAMETER Vendor
+        The vendor/publisher name.
+
+    .PARAMETER Description
+        Description of the software.
+
+    .PARAMETER InternalNotes
+        Internal notes (optional).
+
+    .PARAMETER Platform
+        The platform: Windows, Mac, or Linux.
+
+    .OUTPUTS
+        Returns the created repository object with its ID.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OrganizationId,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter(Mandatory)]
+        [string]$Vendor,
+
+        [Parameter()]
+        [string]$Description = "",
+
+        [Parameter()]
+        [string]$InternalNotes = "",
+
+        [Parameter(Mandatory)]
+        [ValidateSet('Windows', 'Mac', 'Linux')]
+        [string]$Platform
+    )
+
+    Write-Action1Log "Creating software repository: $Name" -Level INFO
+
+    $token = Get-Action1AccessToken
+    $uri = "$script:Action1BaseUri/software-repository/$OrganizationId"
+
+    $body = @{
+        name           = $Name
+        vendor         = $Vendor
+        description    = $Description
+        internal_notes = $InternalNotes
+        platform       = $Platform
+    } | ConvertTo-Json -Depth 5
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Method POST -Headers @{
+            'Authorization' = "Bearer $token"
+            'Content-Type'  = 'application/json'
+            'Accept'        = 'application/json'
+        } -Body $body -ErrorAction Stop
+
+        if (-not $response.id) {
+            throw "Repository creation returned no ID"
+        }
+
+        Write-Action1Log "Created repository: $Name (ID: $($response.id))" -Level INFO
+        return $response
+    }
+    catch {
+        Write-Action1Log "Failed to create repository" -Level ERROR -ErrorRecord $_
+        throw
+    }
+}
+
+function Select-Action1SoftwareRepository {
+    <#
+    .SYNOPSIS
+        Interactively selects or creates a software repository.
+
+    .DESCRIPTION
+        Lists existing custom repositories and prompts the user to select one
+        or create a new one. If DefaultName is provided and matches an existing
+        repository, it will be auto-selected.
+
+    .PARAMETER OrganizationId
+        The organization ID (or "all" for enterprise-wide).
+
+    .PARAMETER DefaultName
+        Default name for creating a new repository. Also used for auto-matching.
+
+    .PARAMETER DefaultVendor
+        Default vendor for creating a new repository.
+
+    .PARAMETER DefaultPlatform
+        Default platform for creating a new repository.
+
+    .PARAMETER AutoSelect
+        If true and DefaultName matches an existing repo, auto-select it without prompting.
+
+    .OUTPUTS
+        Returns a hashtable with Id and IsNew properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OrganizationId,
+
+        [Parameter()]
+        [string]$DefaultName,
+
+        [Parameter()]
+        [string]$DefaultVendor,
+
+        [Parameter()]
+        [ValidateSet('Windows', 'Mac', 'Linux')]
+        [string]$DefaultPlatform = 'Windows',
+
+        [Parameter()]
+        [switch]$AutoSelect
+    )
+
+    $repos = Get-Action1SoftwareRepositories -OrganizationId $OrganizationId
+
+    if ($repos.Count -eq 0) {
+        Write-Host "`nNo custom repositories found. Creating new one..." -ForegroundColor Yellow
+
+        $name = if ($DefaultName) { $DefaultName } else { Read-Host "Repository name" }
+        $vendor = if ($DefaultVendor) { $DefaultVendor } else { Read-Host "Vendor name" }
+
+        $newRepo = New-Action1SoftwareRepository `
+            -OrganizationId $OrganizationId `
+            -Name $name `
+            -Vendor $vendor `
+            -Platform $DefaultPlatform
+
+        return @{
+            Id    = $newRepo.id
+            IsNew = $true
+        }
+    }
+
+    # Try to auto-match by name if DefaultName is provided
+    if ($DefaultName) {
+        $matchedRepo = $repos | Where-Object { $_.name -eq $DefaultName } | Select-Object -First 1
+        if ($matchedRepo) {
+            Write-Host "`nAuto-matched repository: $($matchedRepo.name) ($($matchedRepo.vendor))" -ForegroundColor Green
+            return @{
+                Id    = $matchedRepo.id
+                IsNew = $false
+            }
+        }
+    }
+
+    Write-Host "`nExisting Custom Repositories:" -ForegroundColor Cyan
+    $index = 1
+    foreach ($repo in $repos) {
+        Write-Host "  $index) $($repo.name) ($($repo.vendor)) - $($repo.platform)" -ForegroundColor White
+        $index++
+    }
+    Write-Host "  0) Create new repository" -ForegroundColor Yellow
+
+    $maxIndex = $repos.Count
+    do {
+        $selection = Read-Host "Select option (1-$maxIndex or 0 for new)"
+        $selNum = -1
+        if (-not [int]::TryParse($selection, [ref]$selNum) -or ($selNum -lt 0 -or $selNum -gt $maxIndex)) {
+            Write-Host "Invalid selection. Please enter a number between 0 and $maxIndex." -ForegroundColor Red
+            continue
+        }
+        break
+    } while ($true)
+
+    if ($selNum -eq 0) {
+        # Create new repository
+        $name = if ($DefaultName) { $DefaultName } else { Read-Host "Repository name" }
+        $vendor = if ($DefaultVendor) { $DefaultVendor } else { Read-Host "Vendor name" }
+
+        $newRepo = New-Action1SoftwareRepository `
+            -OrganizationId $OrganizationId `
+            -Name $name `
+            -Vendor $vendor `
+            -Platform $DefaultPlatform
+
+        return @{
+            Id    = $newRepo.id
+            IsNew = $true
+        }
+    }
+    else {
+        $selectedRepo = $repos[$selNum - 1]
+        Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
+        return @{
+            Id    = $selectedRepo.id
+            IsNew = $false
+        }
+    }
+}
+
+function Get-Action1RepositoryVersions {
+    <#
+    .SYNOPSIS
+        Lists versions for a software repository.
+
+    .DESCRIPTION
+        Retrieves all versions for the specified software repository.
+
+    .PARAMETER OrganizationId
+        The organization ID (or "all" for enterprise-wide).
+
+    .PARAMETER RepositoryId
+        The software repository ID.
+
+    .OUTPUTS
+        Returns an array of version objects.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OrganizationId,
+
+        [Parameter(Mandatory)]
+        [string]$RepositoryId
+    )
+
+    Write-Action1Log "Fetching versions for repository $RepositoryId..." -Level INFO
+
+    $token = Get-Action1AccessToken
+    $uri = "$script:Action1BaseUri/software-repository/$OrganizationId/$RepositoryId/versions?limit=100"
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Method GET -Headers @{
+            'Authorization' = "Bearer $token"
+            'Content-Type'  = 'application/json'
+            'Accept'        = 'application/json'
+        } -ErrorAction Stop
+
+        # Handle different response formats
+        if ($response.type -eq 'Version') {
+            # Single version object
+            return @($response)
+        }
+        elseif ($response.items) {
+            return $response.items
+        }
+        else {
+            return @()
+        }
+    }
+    catch {
+        Write-Action1Log "Failed to list versions" -Level WARN -ErrorRecord $_
+        return @()
+    }
+}
+
+function New-Action1RepositoryVersion {
+    <#
+    .SYNOPSIS
+        Creates a new version in a software repository.
+
+    .DESCRIPTION
+        Creates a new version with the specified properties, suitable for uploading
+        an installer file.
+
+    .PARAMETER OrganizationId
+        The organization ID (or "all" for enterprise-wide).
+
+    .PARAMETER RepositoryId
+        The software repository ID.
+
+    .PARAMETER Version
+        The version number string.
+
+    .PARAMETER AppNameMatch
+        Application name matching pattern for detection.
+
+    .PARAMETER FileName
+        The installer file name.
+
+    .PARAMETER Platform
+        The upload platform: Windows_64, Windows_32, Windows_ARM64, Mac_AppleSilicon, Mac_IntelCPU.
+
+    .PARAMETER InstallType
+        Installation type: msi, exe, msix, or script.
+
+    .PARAMETER ReleaseDate
+        Release date (defaults to today).
+
+    .PARAMETER OS
+        Array of supported OS versions.
+
+    .PARAMETER SuccessExitCodes
+        Comma-separated success exit codes (default "0").
+
+    .PARAMETER RebootExitCodes
+        Comma-separated reboot exit codes (default "1641,3010").
+
+    .OUTPUTS
+        Returns the created version object with its ID.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OrganizationId,
+
+        [Parameter(Mandatory)]
+        [string]$RepositoryId,
+
+        [Parameter(Mandatory)]
+        [string]$Version,
+
+        [Parameter(Mandatory)]
+        [string]$AppNameMatch,
+
+        [Parameter(Mandatory)]
+        [string]$FileName,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('Windows_64', 'Windows_32', 'Windows_ARM64', 'Mac_AppleSilicon', 'Mac_IntelCPU')]
+        [string]$Platform,
+
+        [Parameter()]
+        [ValidateSet('msi', 'exe', 'msix', 'script')]
+        [string]$InstallType = 'msi',
+
+        [Parameter()]
+        [string]$ReleaseDate = (Get-Date -Format 'yyyy-MM-dd'),
+
+        [Parameter()]
+        [string[]]$OS = @('Windows 11', 'Windows 10', 'Windows'),
+
+        [Parameter()]
+        [string]$SuccessExitCodes = "0",
+
+        [Parameter()]
+        [string]$RebootExitCodes = "1641,3010",
+
+        [Parameter()]
+        [string]$Notes = "",
+
+        [Parameter()]
+        [ValidateSet('Regular Updates', 'Security Updates', 'Critical Updates')]
+        [string]$UpdateType = 'Regular Updates',
+
+        [Parameter()]
+        [ValidateSet('Unspecified', 'Low', 'Medium', 'High', 'Critical')]
+        [string]$SecuritySeverity = 'Unspecified',
+
+        [Parameter()]
+        [ValidateSet('Published', 'Draft')]
+        [string]$Status = 'Published',
+
+        [Parameter()]
+        [ValidateSet('New', 'Approved', 'Declined')]
+        [string]$ApprovalStatus = 'Approved',
+
+        [Parameter()]
+        [ValidateSet('yes', 'no')]
+        [string]$EulaAccepted = 'no'
+    )
+
+    Write-Action1Log "Creating version $Version for repository $RepositoryId..." -Level INFO
+
+    $token = Get-Action1AccessToken
+    $uri = "$script:Action1BaseUri/software-repository/$OrganizationId/$RepositoryId/versions"
+
+    # Build the file_name object with platform-specific entry
+    $fileNameObj = @{
+        $Platform = @{
+            name = $FileName
+            type = "cloud"
+        }
+    }
+
+    $body = @{
+        version             = $Version
+        app_name_match      = $AppNameMatch
+        release_date        = $ReleaseDate
+        os                  = $OS
+        install_type        = $InstallType
+        success_exit_codes  = $SuccessExitCodes
+        reboot_exit_codes   = $RebootExitCodes
+        notes               = $Notes
+        update_type         = $UpdateType
+        security_severity   = $SecuritySeverity
+        status              = $Status
+        approval_status     = $ApprovalStatus
+        EULA_accepted       = $EulaAccepted
+        file_name           = $fileNameObj
+    } | ConvertTo-Json -Depth 5
+
+    Write-Action1Log "Version payload: $body" -Level DEBUG
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Method POST -Headers @{
+            'Authorization' = "Bearer $token"
+            'Content-Type'  = 'application/json'
+            'Accept'        = 'application/json'
+        } -Body $body -ErrorAction Stop
+
+        if (-not $response.id) {
+            throw "Version creation returned no ID"
+        }
+
+        Write-Action1Log "Created version: $Version (ID: $($response.id))" -Level INFO
+        return $response
+    }
+    catch {
+        # Try to extract error details from the response
+        $errorMessage = $_.Exception.Message
+        if ($_.ErrorDetails.Message) {
+            try {
+                $errorBody = $_.ErrorDetails.Message | ConvertFrom-Json
+                $errorMessage = "$errorMessage - API Error: $($errorBody | ConvertTo-Json -Compress)"
+            }
+            catch {
+                $errorMessage = "$errorMessage - Response: $($_.ErrorDetails.Message)"
+            }
+        }
+        Write-Action1Log "Failed to create version: $errorMessage" -Level ERROR
+        Write-Action1Log "Request URI: $uri" -Level DEBUG
+        Write-Action1Log "Request Body: $body" -Level DEBUG
+        throw $errorMessage
+    }
+}
+
+#endregion
+
+function Get-UploadLocationUrl {
+    <#
+    .SYNOPSIS
+        Normalizes the upload location URL returned by the Action1 API.
+
+    .DESCRIPTION
+        The X-Upload-Location header may return a relative path (e.g., /API/...)
+        or a full URL. This function normalizes it to a full URL.
+
+    .PARAMETER BaseUri
+        The base API URI (e.g., https://app.eu.action1.com/api/3.0)
+
+    .PARAMETER Location
+        The location value from the X-Upload-Location header.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$BaseUri,
+
+        [Parameter(Mandatory)]
+        [string]$Location
+    )
+
+    # If already a full URL, return as-is
+    if ($Location -match '^https?://') {
+        return $Location
+    }
+
+    # Extract origin from base URI
+    $uri = [System.Uri]$BaseUri
+    $origin = "$($uri.Scheme)://$($uri.Host)"
+    if ($uri.Port -ne 80 -and $uri.Port -ne 443) {
+        $origin = "$($origin):$($uri.Port)"
+    }
+
+    # Handle /API/* paths (convert to /api/3.0/*)
+    if ($Location -match '^/API/') {
+        $Location = $Location -replace '^/API/', '/api/3.0/'
+    }
+
+    # Build full URL
+    if ($Location -match '^/') {
+        return "$origin$Location"
+    }
+    else {
+        return "$origin/$Location"
+    }
+}
+
+function Initialize-Action1SoftwareRepoUpload {
+    <#
+    .SYNOPSIS
+        Initializes a resumable upload session for Action1 software repository.
+
+    .DESCRIPTION
+        Sends a POST request to the upload endpoint with content metadata headers.
+        Returns the upload URL from the X-Upload-Location header.
+
+    .PARAMETER OrganizationId
+        The organization ID (or "all" for enterprise-wide).
+
+    .PARAMETER PackageId
+        The software repository package ID.
+
+    .PARAMETER VersionId
+        The version ID to upload to.
+
+    .PARAMETER Platform
+        The platform identifier (e.g., Windows_64, Windows_32, Mac_AppleSilicon).
+
+    .PARAMETER FileSize
+        The total file size in bytes.
+
+    .OUTPUTS
+        Returns the upload URL to use for chunked uploads.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OrganizationId,
+
+        [Parameter(Mandatory)]
+        [string]$PackageId,
+
+        [Parameter(Mandatory)]
+        [string]$VersionId,
+
+        [Parameter(Mandatory)]
+        [string]$Platform,
+
+        [Parameter(Mandatory)]
+        [long]$FileSize
+    )
+
+    $token = Get-Action1AccessToken
+    $uploadInitUrl = "$script:Action1BaseUri/software-repository/$OrganizationId/$PackageId/versions/$VersionId/upload?platform=$Platform"
+
+    Write-Action1Log "Initializing upload session: $uploadInitUrl" -Level INFO
+    Write-Action1Log "File size: $FileSize bytes, Platform: $Platform" -Level DEBUG
+
+    $headers = @{
+        'Authorization'           = "Bearer $token"
+        'Content-Type'            = 'application/json'
+        'Accept'                  = 'application/json'
+        'X-Upload-Content-Type'   = 'application/octet-stream'
+        'X-Upload-Content-Length' = $FileSize.ToString()
+    }
+
+    try {
+        # Use -SkipHttpErrorCheck to handle 308 responses (PowerShell 7+)
+        $response = Invoke-WebRequest -Uri $uploadInitUrl -Method POST -Headers $headers -SkipHttpErrorCheck
+
+        $statusCode = $response.StatusCode
+        Write-Action1Log "Upload init response status: $statusCode" -Level DEBUG
+
+        if ($statusCode -ne 308) {
+            Write-Action1Log "Upload init failed: expected 308, got $statusCode" -Level ERROR
+            Write-Action1Log "Response: $($response.Content)" -Level ERROR
+            throw "Upload initialization failed: expected HTTP 308, got $statusCode"
+        }
+
+        # Get the upload location from headers
+        $uploadLocation = $response.Headers['X-Upload-Location']
+        if (-not $uploadLocation) {
+            $uploadLocation = $response.Headers['x-upload-location']
+        }
+
+        if (-not $uploadLocation) {
+            Write-Action1Log "X-Upload-Location header missing from response" -Level ERROR
+            Write-Action1Log "Available headers: $($response.Headers.Keys -join ', ')" -Level DEBUG
+            throw "Upload initialization succeeded but X-Upload-Location header is missing"
+        }
+
+        # Handle array response (PowerShell may return headers as arrays)
+        if ($uploadLocation -is [array]) {
+            $uploadLocation = $uploadLocation[0]
+        }
+
+        # Normalize the upload URL
+        $normalizedUrl = Get-UploadLocationUrl -BaseUri $script:Action1BaseUri -Location $uploadLocation
+
+        Write-Action1Log "Upload URL obtained: $normalizedUrl" -Level INFO
+
+        return $normalizedUrl
+    }
+    catch {
+        Write-Action1Log "Upload initialization failed" -Level ERROR -ErrorRecord $_
+        throw
+    }
+}
+
+function Invoke-Action1SoftwareRepoUpload {
+    <#
+    .SYNOPSIS
+        Uploads a file to Action1 software repository using resumable upload protocol.
+
+    .DESCRIPTION
+        Implements the Action1 resumable upload protocol:
+        1. Initializes upload session (POST with X-Upload-Content-* headers)
+        2. Uploads file in chunks using Content-Range headers
+        3. Each chunk expects HTTP 308 (continue) or 200/201/204 (complete)
+
+        This is the correct upload method for Action1 software repository,
+        matching the protocol used by the official zsh deployment script.
+
+    .PARAMETER FilePath
+        Path to the file to upload.
+
+    .PARAMETER OrganizationId
+        The organization ID (or "all" for enterprise-wide).
+
+    .PARAMETER PackageId
+        The software repository package ID.
+
+    .PARAMETER VersionId
+        The version ID to upload to.
+
+    .PARAMETER Platform
+        The platform identifier. Valid values:
+        - Windows_64, Windows_32, Windows_ARM64
+        - Mac_AppleSilicon, Mac_IntelCPU
+
+    .PARAMETER ChunkSizeMB
+        Size of each upload chunk in megabytes. Default is 24MB.
+        Minimum is 5MB.
+
+    .EXAMPLE
+        Invoke-Action1SoftwareRepoUpload -FilePath "C:\installer.msi" `
+            -OrganizationId "all" -PackageId "pkg123" -VersionId "ver456" `
+            -Platform "Windows_64"
+
+    .EXAMPLE
+        # Upload a Mac installer
+        Invoke-Action1SoftwareRepoUpload -FilePath "/path/to/app.zip" `
+            -OrganizationId "org789" -PackageId "pkg123" -VersionId "ver456" `
+            -Platform "Mac_AppleSilicon" -ChunkSizeMB 32
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory)]
+        [string]$OrganizationId,
+
+        [Parameter(Mandatory)]
+        [string]$PackageId,
+
+        [Parameter(Mandatory)]
+        [string]$VersionId,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('Windows_64', 'Windows_32', 'Windows_ARM64', 'Mac_AppleSilicon', 'Mac_IntelCPU')]
+        [string]$Platform,
+
+        [Parameter()]
+        [ValidateRange(5, 100)]
+        [int]$ChunkSizeMB = 24
+    )
+
+    # Validate file exists
+    if (-not (Test-Path $FilePath)) {
+        throw "File not found: $FilePath"
+    }
+
+    $fileInfo = Get-Item $FilePath
+    $fileSize = $fileInfo.Length
+    $fileName = $fileInfo.Name
+    $chunkSize = $ChunkSizeMB * 1024 * 1024
+    $totalChunks = [Math]::Ceiling($fileSize / $chunkSize)
+
+    Write-Action1Log "Starting software repository upload" -Level INFO
+    Write-Action1Log "File: $fileName, Size: $(ConvertTo-FileSize -Bytes $fileSize), Chunks: $totalChunks x ${ChunkSizeMB}MB" -Level INFO
+
+    try {
+        # Step 1: Initialize upload session
+        Write-Action1Progress -Activity "Uploading $fileName" -Status "Initializing upload..." -PercentComplete 0 -Id 1
+
+        $uploadUrl = Initialize-Action1SoftwareRepoUpload `
+            -OrganizationId $OrganizationId `
+            -PackageId $PackageId `
+            -VersionId $VersionId `
+            -Platform $Platform `
+            -FileSize $fileSize
+
+        Write-Action1Log "Upload session initialized, URL: $uploadUrl" -Level DEBUG
+
+        # Step 2: Upload file in chunks
+        $token = Get-Action1AccessToken
+        $fileStream = [System.IO.File]::OpenRead($FilePath)
+        $buffer = New-Object byte[] $chunkSize
+        $offset = 0
+        $chunkNumber = 0
+
+        try {
+            while ($offset -lt $fileSize) {
+                $chunkNumber++
+                $bytesToRead = [Math]::Min($chunkSize, $fileSize - $offset)
+                $bytesRead = $fileStream.Read($buffer, 0, $bytesToRead)
+
+                $startByte = $offset
+                $endByte = $offset + $bytesRead - 1
+                $contentRange = "bytes $startByte-$endByte/$fileSize"
+
+                $percentComplete = [int](($offset / $fileSize) * 100)
+                $uploadedSize = ConvertTo-FileSize -Bytes $offset
+                $totalSize = ConvertTo-FileSize -Bytes $fileSize
+
+                Write-Action1Progress `
+                    -Activity "Uploading $fileName ($uploadedSize / $totalSize)" `
+                    -Status "Chunk $chunkNumber of $totalChunks" `
+                    -PercentComplete $percentComplete `
+                    -Id 1
+
+                Write-Action1Log "Uploading chunk $($chunkNumber)/$($totalChunks): $contentRange" -Level DEBUG
+
+                # Prepare the chunk data (only the bytes we actually read)
+                # Must create proper byte[] - array slicing creates Object[] which causes Content-Length issues
+                $chunkData = New-Object byte[] $bytesRead
+                [Array]::Copy($buffer, 0, $chunkData, 0, $bytesRead)
+
+                # Upload the chunk using PUT with Content-Range
+                # Use -SkipHttpErrorCheck to handle 308 responses (PowerShell 7+)
+                $response = Invoke-WebRequest -Uri $uploadUrl -Method PUT -Headers @{
+                    'Authorization'  = "Bearer $token"
+                    'Content-Type'   = 'application/octet-stream'
+                    'Content-Length' = $bytesRead.ToString()
+                    'Content-Range'  = $contentRange
+                } -Body $chunkData -SkipHttpErrorCheck
+
+                $statusCode = $response.StatusCode
+
+                # Check response status
+                if ($statusCode -eq 308) {
+                    # Continue uploading
+                    Write-Action1Log "Chunk $chunkNumber uploaded successfully (308 - continue)" -Level TRACE
+                }
+                elseif ($statusCode -in @(200, 201, 204)) {
+                    # Upload complete
+                    Write-Action1Log "Chunk $chunkNumber uploaded - upload complete ($statusCode)" -Level INFO
+                    break
+                }
+                else {
+                    $errorContent = $response.Content
+                    Write-Action1Log "Chunk upload failed with status $statusCode`: $errorContent" -Level ERROR
+                    throw "Chunk upload failed with status code: $statusCode"
+                }
+
+                $offset += $bytesRead
+            }
+        }
+        finally {
+            $fileStream.Close()
+            $fileStream.Dispose()
+        }
+
+        Write-Action1Progress -Activity "Uploading $fileName" -Status "Complete" -PercentComplete 100 -Id 1
+        Start-Sleep -Milliseconds 500
+        Write-Progress -Activity "Uploading $fileName" -Id 1 -Completed
+
+        Write-Action1Log "Software repository upload completed successfully" -Level INFO
+        Write-Host "✓ Upload completed: $fileName" -ForegroundColor Green
+
+        return @{
+            Success = $true
+            FileName = $fileName
+            FileSize = $fileSize
+            ChunksUploaded = $chunkNumber
+            Platform = $Platform
+        }
+    }
+    catch {
+        Write-Progress -Activity "Uploading $fileName" -Id 1 -Completed
+        Write-Action1Log "Software repository upload failed" -Level ERROR -ErrorRecord $_
+        throw
+    }
+}
+
 #endregion
 
 #region Helper Functions
+
+function Get-AppNameMatchPatterns {
+    <#
+    .SYNOPSIS
+        Generates regex patterns for matching application display names.
+
+    .DESCRIPTION
+        Creates two patterns for the Action1 app_name_match field:
+        - Specific: Matches the exact app name with version placeholder
+        - Broad: Matches variations of the app name
+
+    .PARAMETER AppName
+        The application name to generate patterns for.
+
+    .OUTPUTS
+        Returns a hashtable with Specific and Broad regex patterns.
+
+    .EXAMPLE
+        Get-AppNameMatchPatterns -AppName "PowerShell 7 Preview"
+        # Returns: @{ Specific = "^PowerShell 7 Preview.*$"; Broad = "^PowerShell.*Preview.*$" }
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AppName
+    )
+
+    # Escape regex special characters in the app name
+    $escapedName = [regex]::Escape($AppName)
+
+    # Specific pattern: exact name followed by optional version info
+    $specificPattern = "^$escapedName.*`$"
+
+    # Broad pattern: key words from the app name with wildcards between
+    # Extract significant words (3+ characters, not common words)
+    $commonWords = @('the', 'and', 'for', 'with', 'from')
+    $words = $AppName -split '\s+' | Where-Object {
+        $_.Length -ge 3 -and $_ -notin $commonWords
+    }
+
+    if ($words.Count -gt 0) {
+        # Join words with .* to create a broad match
+        $escapedWords = $words | ForEach-Object { [regex]::Escape($_) }
+        $broadPattern = "^" + ($escapedWords -join '.*') + ".*`$"
+    }
+    else {
+        # Fallback to escaped name
+        $broadPattern = "^$escapedName.*`$"
+    }
+
+    return @{
+        Specific = $specificPattern
+        Broad    = $broadPattern
+    }
+}
 
 function Get-Action1AccessToken {
     <#
@@ -2482,6 +3361,7 @@ function Get-InstallerMetadata {
     return $result
 }
 
+#endregion
 #region Public Functions
 
 function Set-Action1ApiCredentials {
@@ -2784,6 +3664,7 @@ function Get-Action1ApiCredentials {
     return $credInfo
 }
 
+# TODO: implement function to silently run in Get-Action1ApiCredentials and  
 function Test-Action1Connection {
     <#
     .SYNOPSIS
@@ -2818,6 +3699,7 @@ function Test-Action1Connection {
     }
 }
 
+# TODO: implement function in Deploy-Action1AppRepo
 function New-Action1AppRepo {
     <#
     .SYNOPSIS
@@ -3164,7 +4046,7 @@ Write-Host "Post-installation complete."
 
     return $repoPath
 }
-
+# TODO: Promot for configuration of additional actions before displaying options
 function New-Action1AppPackage {
     <#
     .SYNOPSIS
@@ -3371,6 +4253,107 @@ function New-Action1AppPackage {
         if (-not $uninstallSwitches) { $uninstallSwitches = $installSwitches }
     }
 
+    # Prompt for version/release information
+    Write-Host "`n--- Version Information ---" -ForegroundColor Cyan
+
+    # Release date
+    $defaultReleaseDate = Get-Date -Format "yyyy-MM-dd"
+    Write-Host "Release Date (yyyy-MM-dd) [$defaultReleaseDate]: " -NoNewline
+    $releaseDate = Read-Host
+    if (-not $releaseDate) { $releaseDate = $defaultReleaseDate }
+    # Validate date format
+    try {
+        [datetime]::ParseExact($releaseDate, "yyyy-MM-dd", $null) | Out-Null
+    }
+    catch {
+        Write-Host "  Invalid date format, using today's date" -ForegroundColor Yellow
+        $releaseDate = $defaultReleaseDate
+    }
+
+    # Update Type
+    $updateTypes = @('Regular Updates', 'Security Updates', 'Critical Updates')
+    Write-Host "`nUpdate Type:"
+    for ($i = 0; $i -lt $updateTypes.Count; $i++) {
+        $marker = if ($i -eq 0) { " (default)" } else { "" }
+        Write-Host "  [$i] $($updateTypes[$i])$marker"
+    }
+    Write-Host "Select [0]: " -NoNewline
+    $updateTypeSelection = Read-Host
+    if (-not $updateTypeSelection) { $updateTypeSelection = "0" }
+    $updateType = $updateTypes[[int]$updateTypeSelection]
+    Write-Host "  Selected: $updateType" -ForegroundColor Green
+
+    # Security Severity (only if Security Updates)
+    $securitySeverity = "Unspecified"
+    if ($updateType -eq 'Security Updates') {
+        $severities = @('Unspecified', 'Low', 'Medium', 'High', 'Critical')
+        Write-Host "`nSecurity Severity:"
+        for ($i = 0; $i -lt $severities.Count; $i++) {
+            $marker = if ($i -eq 0) { " (default)" } else { "" }
+            Write-Host "  [$i] $($severities[$i])$marker"
+        }
+        Write-Host "Select [0]: " -NoNewline
+        $severitySelection = Read-Host
+        if (-not $severitySelection) { $severitySelection = "0" }
+        $securitySeverity = $severities[[int]$severitySelection]
+        Write-Host "  Selected: $securitySeverity" -ForegroundColor Green
+    }
+
+    # CVEs (optional)
+    Write-Host "`nCVEs (comma-separated, optional): " -NoNewline
+    $cvesInput = Read-Host
+    $cves = @()
+    if ($cvesInput) {
+        $cves = $cvesInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    }
+
+    # EULA (optional)
+    Write-Host "EULA URL or text (optional): " -NoNewline
+    $eula = Read-Host
+
+    # Additional Actions (optional)
+    Write-Host "`n--- Additional Actions (Optional) ---" -ForegroundColor Cyan
+    $actionOptions = @(
+        @{ Name = 'Deploy Software'; Value = 'deploy_software' }
+        @{ Name = 'Deploy Updates'; Value = 'deploy_updates' }
+        @{ Name = 'Reboot'; Value = 'reboot' }
+        @{ Name = 'Run Script'; Value = 'run_script' }
+        @{ Name = 'Uninstall Software'; Value = 'uninstall_software' }
+        @{ Name = 'Update Ring'; Value = 'update_ring' }
+    )
+    Write-Host "Select additional actions to associate (comma-separated numbers, Enter to skip):"
+    for ($i = 0; $i -lt $actionOptions.Count; $i++) {
+        Write-Host "  [$i] $($actionOptions[$i].Name)"
+    }
+    Write-Host "Select: " -NoNewline
+    $actionsInput = Read-Host
+
+    $additionalActions = @()
+    if ($actionsInput) {
+        $selectedIndices = $actionsInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' }
+        foreach ($idx in $selectedIndices) {
+            $index = [int]$idx
+            if ($index -ge 0 -and $index -lt $actionOptions.Count) {
+                $action = @{
+                    Type = $actionOptions[$index].Value
+                    Name = $actionOptions[$index].Name
+                }
+
+                # For Run Script, we'll add script selection later
+                if ($action.Type -eq 'run_script') {
+                    Write-Host "  Script selection will be configured during deployment" -ForegroundColor DarkGray
+                    $action.ScriptId = ""
+                    $action.ScriptName = ""
+                }
+
+                $additionalActions += $action
+            }
+        }
+        if ($additionalActions.Count -gt 0) {
+            Write-Host "  Selected: $($additionalActions.Name -join ', ')" -ForegroundColor Green
+        }
+    }
+
     # Build installers array for manifest
     $installersArray = @()
     foreach ($arch in $architectures) {
@@ -3383,18 +4366,33 @@ function New-Action1AppPackage {
         }
     }
 
+    # Generate app name match patterns for Action1 detection
+    $appNamePatterns = Get-AppNameMatchPatterns -AppName $AppName
+
     # Create manifest
     $manifest = [PSCustomObject]@{
         AppName = $AppName
         Publisher = $Publisher
         Description = if ($Description) { $Description } else { "" }
         Version = $Version
+        ReleaseDate = $releaseDate
         CreatedDate = Get-Date -Format "yyyy-MM-dd"
         LastModified = Get-Date -Format "yyyy-MM-dd"
         InstallerType = $installerType
         Installers = $installersArray
         InstallSwitches = $installSwitches
         UninstallSwitches = $uninstallSwitches
+        AppNameMatch = @{
+            Specific = $appNamePatterns.Specific
+            Broad = $appNamePatterns.Broad
+        }
+        UpdateInfo = @{
+            UpdateType = $updateType
+            SecuritySeverity = $securitySeverity
+            CVEs = $cves
+            Eula = $eula
+        }
+        AdditionalActions = $additionalActions
         DetectionMethod = @{
             Type = "registry"
             Path = ""
@@ -3508,49 +4506,103 @@ function New-Action1AppPackage {
 function Deploy-Action1App {
     <#
     .SYNOPSIS
-        Deploys a new application to Action1.
-    
+        Deploys an application to Action1 Software Repository.
+
     .DESCRIPTION
-        Creates a new application package in Action1 based on the manifest configuration
-        and uploads the installer file.
-    
+        Deploys an application using the correct Action1 Software Repository API flow:
+        1. Prompts for organization (or uses manifest/parameter value)
+        2. Finds matching repository or creates a new one
+        3. Creates a new version entry
+        4. Uploads installer file(s) using resumable upload protocol
+
     .PARAMETER ManifestPath
         Path to the manifest.json file.
-    
+
     .PARAMETER OrganizationId
         Action1 organization ID. If not specified, uses value from manifest or prompts.
-    
-    .PARAMETER WhatIf
+
+    .PARAMETER DryRun
         Shows what would be deployed without actually deploying.
-    
+
     .EXAMPLE
-        Deploy-Action1App -ManifestPath ".\7-Zip\manifest.json"
+        Deploy-Action1App -ManifestPath ".\PowerShell\manifest.json"
+
+    .EXAMPLE
+        Deploy-Action1App -ManifestPath ".\7-Zip\manifest.json" -OrganizationId "all"
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)]
         [string]$ManifestPath,
-        
+
         [Parameter()]
         [string]$OrganizationId,
-        
+
         [Parameter()]
         [switch]$DryRun
     )
-    
-    Write-Host "`n=== Action1 Application Deployment ===" -ForegroundColor Cyan
-    
+
+    Write-Host "`n=== Action1 Software Repository Deployment ===" -ForegroundColor Cyan
+
     # Load manifest
     $manifest = Read-ManifestFile -Path $ManifestPath
     $repoPath = Split-Path $ManifestPath -Parent
-    
-    # Validate installer exists
-    $installerPath = Join-Path $repoPath "installers" $manifest.InstallerFileName
-    if (-not (Test-Path $installerPath)) {
-        throw "Installer file not found: $installerPath"
+
+    # Handle multiple installers from manifest
+    $installers = @()
+    if ($manifest.Installers -and $manifest.Installers.Count -gt 0) {
+        foreach ($inst in $manifest.Installers) {
+            $archFolder = switch ($inst.Architecture) {
+                'x64' { 'x64' }
+                'x86' { 'x86' }
+                'arm64' { 'arm64' }
+                default { '' }
+            }
+            $installerPath = if ($archFolder) {
+                Join-Path $repoPath "installers" $archFolder $inst.FileName
+            } else {
+                Join-Path $repoPath "installers" $inst.FileName
+            }
+
+            if (Test-Path $installerPath) {
+                $platform = switch ($inst.Architecture) {
+                    'x64' { 'Windows_64' }
+                    'x86' { 'Windows_32' }
+                    'arm64' { 'Windows_ARM64' }
+                    default { 'Windows_64' }
+                }
+                $installers += @{
+                    Path = $installerPath
+                    FileName = $inst.FileName
+                    Platform = $platform
+                    Type = $inst.Type
+                }
+            } else {
+                Write-Action1Log "Installer not found: $installerPath" -Level WARN
+            }
+        }
     }
-    
-    # Get organization ID
+
+    # Fallback to legacy InstallerFileName if no installers found
+    if ($installers.Count -eq 0 -and $manifest.InstallerFileName) {
+        $legacyPath = Join-Path $repoPath "installers" $manifest.InstallerFileName
+        if (Test-Path $legacyPath) {
+            $installers += @{
+                Path = $legacyPath
+                FileName = $manifest.InstallerFileName
+                Platform = 'Windows_64'
+                Type = $manifest.InstallerType
+            }
+        }
+    }
+
+    if ($installers.Count -eq 0) {
+        throw "No installer files found in manifest or installers directory"
+    }
+
+    Write-Action1Log "Found $($installers.Count) installer(s) to upload" -Level INFO
+
+    # Step 1: Get organization ID
     if (-not $OrganizationId) {
         if ($manifest.Action1Config.OrganizationId) {
             $OrganizationId = $manifest.Action1Config.OrganizationId
@@ -3564,115 +4616,112 @@ function Deploy-Action1App {
             Write-ManifestFile -Manifest $manifest -Path $ManifestPath
         }
     }
-    
+
     if ($DryRun) {
-        Write-Host "`n=== Deployment Preview (WhatIf) ===" -ForegroundColor Yellow
+        Write-Host "`n=== Deployment Preview (DryRun) ===" -ForegroundColor Yellow
         Write-Host "Would deploy the following:"
         Write-Host "  App Name: $($manifest.AppName)"
+        Write-Host "  Publisher: $($manifest.Publisher)"
         Write-Host "  Version: $($manifest.Version)"
-        Write-Host "  Installer: $($manifest.InstallerFileName)"
-        Write-Host "  Type: $($manifest.InstallerType)"
-        Write-Host "  Switches: $($manifest.InstallSwitches)"
         Write-Host "  Organization: $OrganizationId"
+        Write-Host "  Installers:"
+        foreach ($inst in $installers) {
+            Write-Host "    - $($inst.FileName) ($($inst.Platform))"
+        }
         return
     }
-    
+
     Write-Host "`nPreparing deployment..." -ForegroundColor Yellow
-    
+
     try {
-        # Step 1: Create application package
-        Write-Host "Creating application package in Action1..."
-        
-        $packageData = @{
-            name = $manifest.AppName
-            version = $manifest.Version
-            description = $manifest.Description
-            publisher = $manifest.Publisher
-            installerType = $manifest.InstallerType
-            installParameters = $manifest.InstallSwitches
-            uninstallParameters = $manifest.UninstallSwitches
-            detectionMethod = $manifest.DetectionMethod
-            requirements = $manifest.Requirements
+        # Step 2: Select or create software repository
+        Write-Host "`nStep 1: Select software repository..." -ForegroundColor Cyan
+
+        $repoSelection = Select-Action1SoftwareRepository `
+            -OrganizationId $OrganizationId `
+            -DefaultName $manifest.AppName `
+            -DefaultVendor $manifest.Publisher `
+            -DefaultPlatform 'Windows'
+
+        $repositoryId = $repoSelection.Id
+        $isNewRepo = $repoSelection.IsNew
+
+        Write-Host "✓ Repository ID: $repositoryId" -ForegroundColor Green
+
+        # Step 3: Create version
+        Write-Host "`nStep 2: Creating version $($manifest.Version)..." -ForegroundColor Cyan
+
+        # Use first installer for the version creation
+        $primaryInstaller = $installers[0]
+
+        # Use AppNameMatch.Specific from manifest if available, otherwise generate from AppName
+        $appNameMatch = if ($manifest.AppNameMatch -and $manifest.AppNameMatch.Specific) {
+            $manifest.AppNameMatch.Specific
+        } else {
+            $patterns = Get-AppNameMatchPatterns -AppName $manifest.AppName
+            $patterns.Specific
         }
-        
-        $createResponse = Invoke-Action1ApiRequest `
-            -Endpoint "organizations/$OrganizationId/packages" `
-            -Method POST `
-            -Body $packageData
-        
-        $packageId = $createResponse.id
-        Write-Action1Log "Package created successfully: $packageId" -Level INFO
-        Write-Host "✓ Package created with ID: $packageId" -ForegroundColor Green
-        
-        # Step 2: Upload installer file with progress
-        Write-Host "Uploading installer file..."
-        Write-Action1Log "Starting installer upload: $installerPath" -Level INFO
-        
-        $fileSize = (Get-Item $installerPath).Length
-        Write-Action1Log "Installer size: $(ConvertTo-FileSize -Bytes $fileSize)" -Level DEBUG
-        
-        $uploadResponse = Invoke-Action1FileUpload `
-            -FilePath $installerPath `
-            -Endpoint "organizations/$OrganizationId/packages/$packageId/upload" `
-            -ChunkSizeMB 5
-        
-        Write-Host "✓ Installer uploaded successfully" -ForegroundColor Green
-        Write-Action1Log "Installer upload completed" -Level INFO
-        
-        # Step 3: Check for pre/post install scripts
-        $preInstallScript = Join-Path $repoPath "scripts" "pre-install.ps1"
-        $postInstallScript = Join-Path $repoPath "scripts" "post-install.ps1"
-        
-        if (Test-Path $preInstallScript) {
-            Write-Host "Uploading pre-install script..."
-            $scriptContent = Get-Content $preInstallScript -Raw
-            $scriptData = @{
-                type = 'pre-install'
-                content = $scriptContent
-            }
-            Invoke-Action1ApiRequest `
-                -Endpoint "organizations/$OrganizationId/packages/$packageId/scripts" `
-                -Method POST `
-                -Body $scriptData
-            Write-Host "✓ Pre-install script uploaded" -ForegroundColor Green
+
+        # Get update info from manifest if available
+        $releaseDate = if ($manifest.ReleaseDate) { $manifest.ReleaseDate } else { Get-Date -Format 'yyyy-MM-dd' }
+        $updateType = if ($manifest.UpdateInfo -and $manifest.UpdateInfo.UpdateType) { $manifest.UpdateInfo.UpdateType } else { 'Regular Updates' }
+        $securitySeverity = if ($manifest.UpdateInfo -and $manifest.UpdateInfo.SecuritySeverity) { $manifest.UpdateInfo.SecuritySeverity } else { 'Unspecified' }
+
+        $versionResponse = New-Action1RepositoryVersion `
+            -OrganizationId $OrganizationId `
+            -RepositoryId $repositoryId `
+            -Version $manifest.Version `
+            -AppNameMatch $appNameMatch `
+            -FileName $primaryInstaller.FileName `
+            -Platform $primaryInstaller.Platform `
+            -InstallType $manifest.InstallerType `
+            -ReleaseDate $releaseDate `
+            -UpdateType $updateType `
+            -SecuritySeverity $securitySeverity
+
+        $versionId = $versionResponse.id
+        Write-Host "✓ Version created with ID: $versionId" -ForegroundColor Green
+
+        # Step 4: Upload installer file(s)
+        Write-Host "`nStep 3: Uploading installer file(s)..." -ForegroundColor Cyan
+
+        foreach ($installer in $installers) {
+            Write-Host "  Uploading: $($installer.FileName) ($($installer.Platform))..." -ForegroundColor White
+
+            $uploadResult = Invoke-Action1SoftwareRepoUpload `
+                -FilePath $installer.Path `
+                -OrganizationId $OrganizationId `
+                -PackageId $repositoryId `
+                -VersionId $versionId `
+                -Platform $installer.Platform `
+                -ChunkSizeMB 24
+
+            Write-Host "  ✓ Upload complete: $($installer.FileName)" -ForegroundColor Green
         }
-        
-        if (Test-Path $postInstallScript) {
-            Write-Host "Uploading post-install script..."
-            $scriptContent = Get-Content $postInstallScript -Raw
-            $scriptData = @{
-                type = 'post-install'
-                content = $scriptContent
-            }
-            Invoke-Action1ApiRequest `
-                -Endpoint "organizations/$OrganizationId/packages/$packageId/scripts" `
-                -Method POST `
-                -Body $scriptData
-            Write-Host "✓ Post-install script uploaded" -ForegroundColor Green
-        }
-        
-        # Update manifest with package ID
-        $manifest.Action1Config.PackageId = $packageId
+
+        # Update manifest with IDs
+        $manifest.Action1Config.PackageId = $repositoryId
         Write-ManifestFile -Manifest $manifest -Path $ManifestPath
-        
+
         Write-Host "`n=== Deployment Complete ===" -ForegroundColor Green
         Write-Host "Application: $($manifest.AppName) v$($manifest.Version)"
-        Write-Host "Package ID: $packageId"
+        Write-Host "Organization: $OrganizationId"
+        Write-Host "Repository ID: $repositoryId"
+        Write-Host "Version ID: $versionId"
         Write-Host "Status: Ready for deployment"
-        Write-Host "`nNext steps:"
-        Write-Host "1. Create a deployment policy in Action1 console"
-        Write-Host "2. Assign the package to target endpoints"
-        Write-Host "3. Monitor deployment status"
-        
+
         return @{
             Success = $true
-            PackageId = $packageId
+            OrganizationId = $OrganizationId
+            RepositoryId = $repositoryId
+            VersionId = $versionId
             AppName = $manifest.AppName
             Version = $manifest.Version
         }
     }
     catch {
         Write-Error "Deployment failed: $($_.Exception.Message)"
+        Write-Action1Log "Deployment failed" -Level ERROR -ErrorRecord $_
         return @{
             Success = $false
             Error = $_.Exception.Message
@@ -3680,6 +4729,7 @@ function Deploy-Action1App {
     }
 }
 
+# TODO: Test function
 function Deploy-Action1AppUpdate {
     <#
     .SYNOPSIS
@@ -3994,6 +5044,7 @@ function Get-Action1Organization {
     }
 }
 
+# TODO: Test function
 function Get-Action1EndpointGroup {
     <#
     .SYNOPSIS
@@ -4068,6 +5119,7 @@ function Get-Action1EndpointGroup {
     }
 }
 
+# TODO: Test function
 function New-Action1EndpointGroup {
     <#
     .SYNOPSIS
@@ -4131,6 +5183,7 @@ function New-Action1EndpointGroup {
     }
 }
 
+# TODO: Test function
 function Get-Action1Automation {
     <#
     .SYNOPSIS
@@ -4253,6 +5306,7 @@ function Get-Action1Automation {
     }
 }
 
+# TODO: Test function
 function Copy-Action1Automation {
     <#
     .SYNOPSIS
@@ -4561,6 +5615,7 @@ function Copy-Action1Automation {
     }
 }
 
+# TODO: Test function
 function Remove-Action1App {
     <#
     .SYNOPSIS
