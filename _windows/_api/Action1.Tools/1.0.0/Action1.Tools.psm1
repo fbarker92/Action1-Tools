@@ -49,6 +49,7 @@ function Read-HostWithCompletion {
     .DESCRIPTION
         Provides an interactive prompt that supports tab completion against a list
         of suggestions. Press Tab to cycle through matches, Enter to confirm.
+        Falls back to numbered selection if tab completion is not available.
 
     .PARAMETER Prompt
         The prompt text to display.
@@ -77,10 +78,13 @@ function Read-HostWithCompletion {
         [switch]$Required
     )
 
-    # Show available suggestions if any exist
+    # Show numbered suggestions for easy selection
     if ($Suggestions.Count -gt 0) {
-        Write-Host "  Available: $($Suggestions -join ', ')" -ForegroundColor DarkGray
-        Write-Host "  (Tab to complete, Enter to confirm)" -ForegroundColor DarkGray
+        Write-Host "  Available options:" -ForegroundColor DarkGray
+        for ($i = 0; $i -lt $Suggestions.Count; $i++) {
+            Write-Host "    [$($i + 1)] $($Suggestions[$i])" -ForegroundColor DarkGray
+        }
+        Write-Host "  (Enter number, type name, or Tab to cycle)" -ForegroundColor DarkGray
     }
 
     do {
@@ -96,16 +100,35 @@ function Read-HostWithCompletion {
         $tabMatches = @()
 
         while ($true) {
-            $key = [Console]::ReadKey($true)
+            # Try to read key - use $host.UI.RawUI on macOS if available
+            try {
+                $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+            }
+            catch {
+                # Fallback to Console.ReadKey
+                $key = [Console]::ReadKey($true)
+            }
 
-            # Check for Tab character (handles cross-platform differences)
-            $isTab = ($key.Key -eq 'Tab') -or ($key.KeyChar -eq "`t")
-            $isEnter = ($key.Key -eq 'Enter') -or ($key.KeyChar -eq "`r") -or ($key.KeyChar -eq "`n")
-            $isBackspace = ($key.Key -eq 'Backspace') -or ($key.KeyChar -eq [char]8) -or ($key.KeyChar -eq [char]127)
-            $isEscape = ($key.Key -eq 'Escape') -or ($key.KeyChar -eq [char]27)
+            # Detect key type - check both Key enum and KeyChar for cross-platform support
+            $keyChar = $key.Character
+            if (-not $keyChar) { $keyChar = $key.KeyChar }
+
+            $virtualKey = $key.VirtualKeyCode
+            $isTab = ($key.Key -eq 'Tab') -or ($keyChar -eq "`t") -or ($virtualKey -eq 9)
+            $isEnter = ($key.Key -eq 'Enter') -or ($keyChar -eq "`r") -or ($keyChar -eq "`n") -or ($virtualKey -eq 13)
+            $isBackspace = ($key.Key -eq 'Backspace') -or ($keyChar -eq [char]8) -or ($keyChar -eq [char]127) -or ($virtualKey -eq 8)
+            $isEscape = ($key.Key -eq 'Escape') -or ($keyChar -eq [char]27) -or ($virtualKey -eq 27)
 
             if ($isEnter) {
                 Write-Host ""  # New line
+
+                # Check if input is a number selecting from suggestions
+                if ($Suggestions.Count -gt 0 -and $currentInput -match '^\d+$') {
+                    $idx = [int]$currentInput - 1
+                    if ($idx -ge 0 -and $idx -lt $Suggestions.Count) {
+                        return $Suggestions[$idx]
+                    }
+                }
 
                 # If empty, use default
                 if (-not $currentInput -and $Default) {
@@ -128,6 +151,9 @@ function Read-HostWithCompletion {
                     $tabMatches = @($Suggestions | Where-Object { $_ -like "$currentInput*" })
                     if ($tabMatches.Count -eq 0) {
                         $tabMatches = @($Suggestions | Where-Object { $_ -like "*$currentInput*" })
+                    }
+                    if ($tabMatches.Count -eq 0) {
+                        $tabMatches = @($Suggestions)
                     }
                 }
 
@@ -158,8 +184,8 @@ function Read-HostWithCompletion {
                 $tabIndex = -1
             }
             else {
-                $char = $key.KeyChar
-                if ([char]::IsLetterOrDigit($char) -or $char -eq ' ' -or $char -eq '-' -or $char -eq '_' -or $char -eq '.') {
+                $char = $keyChar
+                if ($char -and ([char]::IsLetterOrDigit($char) -or $char -eq ' ' -or $char -eq '-' -or $char -eq '_' -or $char -eq '.')) {
                     $currentInput += $char
                     Write-Host $char -NoNewline
                     $tabIndex = -1
@@ -212,13 +238,24 @@ function Read-HostWithFileCompletion {
     $lastTabInput = ""
 
     while ($true) {
-        $key = [Console]::ReadKey($true)
+        # Try to read key - use $host.UI.RawUI on macOS if available
+        try {
+            $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+        }
+        catch {
+            # Fallback to Console.ReadKey
+            $key = [Console]::ReadKey($true)
+        }
 
-        # Check for special keys (handles cross-platform differences)
-        $isTab = ($key.Key -eq 'Tab') -or ($key.KeyChar -eq "`t")
-        $isEnter = ($key.Key -eq 'Enter') -or ($key.KeyChar -eq "`r") -or ($key.KeyChar -eq "`n")
-        $isBackspace = ($key.Key -eq 'Backspace') -or ($key.KeyChar -eq [char]8) -or ($key.KeyChar -eq [char]127)
-        $isEscape = ($key.Key -eq 'Escape') -or ($key.KeyChar -eq [char]27)
+        # Detect key type - check both Key enum and KeyChar for cross-platform support
+        $keyChar = $key.Character
+        if (-not $keyChar) { $keyChar = $key.KeyChar }
+
+        $virtualKey = $key.VirtualKeyCode
+        $isTab = ($key.Key -eq 'Tab') -or ($keyChar -eq "`t") -or ($virtualKey -eq 9)
+        $isEnter = ($key.Key -eq 'Enter') -or ($keyChar -eq "`r") -or ($keyChar -eq "`n") -or ($virtualKey -eq 13)
+        $isBackspace = ($key.Key -eq 'Backspace') -or ($keyChar -eq [char]8) -or ($keyChar -eq [char]127) -or ($virtualKey -eq 8)
+        $isEscape = ($key.Key -eq 'Escape') -or ($keyChar -eq [char]27) -or ($virtualKey -eq 27)
 
         if ($isEnter) {
             Write-Host ""  # New line
@@ -324,10 +361,10 @@ function Read-HostWithFileCompletion {
             $tabIndex = -1
         }
         else {
-            $char = $key.KeyChar
+            $char = $keyChar
             # Allow path characters including :, /, \, ., -, _, spaces
-            if ([char]::IsLetterOrDigit($char) -or
-                $char -in @(' ', '-', '_', '.', '/', '\', ':', '(', ')')) {
+            if ($char -and ([char]::IsLetterOrDigit($char) -or
+                $char -in @(' ', '-', '_', '.', '/', '\', ':', '(', ')'))) {
                 $currentInput += $char
                 Write-Host $char -NoNewline
                 $tabIndex = -1
@@ -1354,13 +1391,42 @@ function Get-Action1SoftwareRepositories {
     $token = Get-Action1AccessToken
     $uri = "$script:Action1BaseUri/software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100"
 
-    try {
-        $response = Invoke-RestMethod -Uri $uri -Method GET -Headers @{
-            'Authorization' = "Bearer $token"
-            'Content-Type'  = 'application/json'
-            'Accept'        = 'application/json'
-        } -ErrorAction Stop
+    $headers = @{
+        'Authorization' = "Bearer $token"
+        'Content-Type'  = 'application/json'
+        'Accept'        = 'application/json'
+    }
 
+    # TRACE: Log full request details
+    Write-Action1Log "========== REQUEST ==========" -Level TRACE
+    Write-Action1Log "GET $uri" -Level TRACE
+    Write-Action1Log "Request Headers:" -Level TRACE
+    Write-Action1Log "  Authorization: Bearer ***MASKED***" -Level TRACE
+    Write-Action1Log "  Content-Type: $($headers['Content-Type'])" -Level TRACE
+    Write-Action1Log "  Accept: $($headers['Accept'])" -Level TRACE
+    Write-Action1Log "=============================" -Level TRACE
+
+    try {
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $webResponse = Invoke-WebRequest -Uri $uri -Method GET -Headers $headers -ErrorAction Stop
+        $stopwatch.Stop()
+
+        # TRACE: Log full response details
+        Write-Action1Log "========== RESPONSE ==========" -Level TRACE
+        Write-Action1Log "HTTP Status: $($webResponse.StatusCode) $($webResponse.StatusDescription)" -Level TRACE
+        Write-Action1Log "Duration: $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
+        Write-Action1Log "Response Headers:" -Level TRACE
+        foreach ($headerName in $webResponse.Headers.Keys) {
+            $headerValue = $webResponse.Headers[$headerName]
+            if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
+            Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+        }
+        Write-Action1Log "Content-Length: $($webResponse.Content.Length) bytes" -Level TRACE
+        Write-Action1Log "Response Body:" -Level TRACE
+        Write-Action1Log $webResponse.Content -Level TRACE
+        Write-Action1Log "==============================" -Level TRACE
+
+        $response = $webResponse.Content | ConvertFrom-Json
         $items = if ($response.items) { $response.items } else { @() }
         Write-Action1Log "Found $($items.Count) custom repositories" -Level INFO
         return $items
@@ -1427,6 +1493,12 @@ function New-Action1SoftwareRepository {
     $token = Get-Action1AccessToken
     $uri = "$script:Action1BaseUri/software-repository/$OrganizationId"
 
+    $headers = @{
+        'Authorization' = "Bearer $token"
+        'Content-Type'  = 'application/json'
+        'Accept'        = 'application/json'
+    }
+
     $body = @{
         name           = $Name
         vendor         = $Vendor
@@ -1435,12 +1507,38 @@ function New-Action1SoftwareRepository {
         platform       = $Platform
     } | ConvertTo-Json -Depth 5
 
+    # TRACE: Log full request details
+    Write-Action1Log "========== REQUEST ==========" -Level TRACE
+    Write-Action1Log "POST $uri" -Level TRACE
+    Write-Action1Log "Request Headers:" -Level TRACE
+    Write-Action1Log "  Authorization: Bearer ***MASKED***" -Level TRACE
+    Write-Action1Log "  Content-Type: $($headers['Content-Type'])" -Level TRACE
+    Write-Action1Log "  Accept: $($headers['Accept'])" -Level TRACE
+    Write-Action1Log "Request Body:" -Level TRACE
+    Write-Action1Log $body -Level TRACE
+    Write-Action1Log "=============================" -Level TRACE
+
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method POST -Headers @{
-            'Authorization' = "Bearer $token"
-            'Content-Type'  = 'application/json'
-            'Accept'        = 'application/json'
-        } -Body $body -ErrorAction Stop
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $webResponse = Invoke-WebRequest -Uri $uri -Method POST -Headers $headers -Body $body -ErrorAction Stop
+        $stopwatch.Stop()
+
+        # TRACE: Log full response details
+        Write-Action1Log "========== RESPONSE ==========" -Level TRACE
+        Write-Action1Log "HTTP Status: $($webResponse.StatusCode) $($webResponse.StatusDescription)" -Level TRACE
+        Write-Action1Log "Duration: $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
+        Write-Action1Log "Response Headers:" -Level TRACE
+        foreach ($headerName in $webResponse.Headers.Keys) {
+            $headerValue = $webResponse.Headers[$headerName]
+            if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
+            Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+        }
+        Write-Action1Log "Content-Length: $($webResponse.Content.Length) bytes" -Level TRACE
+        Write-Action1Log "Response Body:" -Level TRACE
+        Write-Action1Log $webResponse.Content -Level TRACE
+        Write-Action1Log "==============================" -Level TRACE
+
+        $response = $webResponse.Content | ConvertFrom-Json
 
         if (-not $response.id) {
             throw "Repository creation returned no ID"
@@ -1535,16 +1633,15 @@ function Select-Action1SoftwareRepository {
     }
 
     Write-Host "`nExisting Custom Repositories:" -ForegroundColor Cyan
-    $index = 1
-    foreach ($repo in $repos) {
-        Write-Host "  $index) $($repo.name) ($($repo.vendor)) - $($repo.platform)" -ForegroundColor White
-        $index++
+    Write-Host "  [0] Create new repository" -ForegroundColor Yellow
+    for ($i = 0; $i -lt $repos.Count; $i++) {
+        $repo = $repos[$i]
+        Write-Host "  [$($i + 1)] $($repo.name) ($($repo.vendor)) - $($repo.platform)"
     }
-    Write-Host "  0) Create new repository" -ForegroundColor Yellow
 
     $maxIndex = $repos.Count
     do {
-        $selection = Read-Host "Select option (1-$maxIndex or 0 for new)"
+        $selection = Read-Host "`nEnter selection (0-$maxIndex)"
         $selNum = -1
         if (-not [int]::TryParse($selection, [ref]$selNum) -or ($selNum -lt 0 -or $selNum -gt $maxIndex)) {
             Write-Host "Invalid selection. Please enter a number between 0 and $maxIndex." -ForegroundColor Red
@@ -1610,12 +1707,42 @@ function Get-Action1RepositoryVersions {
     $token = Get-Action1AccessToken
     $uri = "$script:Action1BaseUri/software-repository/$OrganizationId/$RepositoryId/versions?limit=100"
 
+    $headers = @{
+        'Authorization' = "Bearer $token"
+        'Content-Type'  = 'application/json'
+        'Accept'        = 'application/json'
+    }
+
+    # TRACE: Log full request details
+    Write-Action1Log "========== REQUEST ==========" -Level TRACE
+    Write-Action1Log "GET $uri" -Level TRACE
+    Write-Action1Log "Request Headers:" -Level TRACE
+    Write-Action1Log "  Authorization: Bearer ***MASKED***" -Level TRACE
+    Write-Action1Log "  Content-Type: $($headers['Content-Type'])" -Level TRACE
+    Write-Action1Log "  Accept: $($headers['Accept'])" -Level TRACE
+    Write-Action1Log "=============================" -Level TRACE
+
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method GET -Headers @{
-            'Authorization' = "Bearer $token"
-            'Content-Type'  = 'application/json'
-            'Accept'        = 'application/json'
-        } -ErrorAction Stop
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $webResponse = Invoke-WebRequest -Uri $uri -Method GET -Headers $headers -ErrorAction Stop
+        $stopwatch.Stop()
+
+        # TRACE: Log full response details
+        Write-Action1Log "========== RESPONSE ==========" -Level TRACE
+        Write-Action1Log "HTTP Status: $($webResponse.StatusCode) $($webResponse.StatusDescription)" -Level TRACE
+        Write-Action1Log "Duration: $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
+        Write-Action1Log "Response Headers:" -Level TRACE
+        foreach ($headerName in $webResponse.Headers.Keys) {
+            $headerValue = $webResponse.Headers[$headerName]
+            if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
+            Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+        }
+        Write-Action1Log "Content-Length: $($webResponse.Content.Length) bytes" -Level TRACE
+        Write-Action1Log "Response Body:" -Level TRACE
+        Write-Action1Log $webResponse.Content -Level TRACE
+        Write-Action1Log "==============================" -Level TRACE
+
+        $response = $webResponse.Content | ConvertFrom-Json
 
         # Handle different response formats
         if ($response.type -eq 'Version') {
@@ -1738,7 +1865,10 @@ function New-Action1RepositoryVersion {
 
         [Parameter()]
         [ValidateSet('yes', 'no')]
-        [string]$EulaAccepted = 'no'
+        [string]$EulaAccepted = 'no',
+
+        [Parameter()]
+        [hashtable]$AllPlatformFiles = @{}
     )
 
     Write-Action1Log "Creating version $Version for repository $RepositoryId..." -Level INFO
@@ -1746,9 +1876,21 @@ function New-Action1RepositoryVersion {
     $token = Get-Action1AccessToken
     $uri = "$script:Action1BaseUri/software-repository/$OrganizationId/$RepositoryId/versions"
 
-    # Build the file_name object with platform-specific entry
-    $fileNameObj = @{
-        $Platform = @{
+    # Build the file_name object with all platform-specific entries
+    $fileNameObj = @{}
+
+    # Add files from AllPlatformFiles hashtable if provided
+    if ($AllPlatformFiles.Count -gt 0) {
+        foreach ($plat in $AllPlatformFiles.Keys) {
+            $fileNameObj[$plat] = @{
+                name = $AllPlatformFiles[$plat]
+                type = "cloud"
+            }
+        }
+    }
+    else {
+        # Fallback to single platform/filename
+        $fileNameObj[$Platform] = @{
             name = $FileName
             type = "cloud"
         }
@@ -1773,12 +1915,44 @@ function New-Action1RepositoryVersion {
 
     Write-Action1Log "Version payload: $body" -Level DEBUG
 
+    $headers = @{
+        'Authorization' = "Bearer $token"
+        'Content-Type'  = 'application/json'
+        'Accept'        = 'application/json'
+    }
+
+    # TRACE: Log full request details
+    Write-Action1Log "========== REQUEST ==========" -Level TRACE
+    Write-Action1Log "POST $uri" -Level TRACE
+    Write-Action1Log "Request Headers:" -Level TRACE
+    Write-Action1Log "  Authorization: Bearer ***MASKED***" -Level TRACE
+    Write-Action1Log "  Content-Type: $($headers['Content-Type'])" -Level TRACE
+    Write-Action1Log "  Accept: $($headers['Accept'])" -Level TRACE
+    Write-Action1Log "Request Body:" -Level TRACE
+    Write-Action1Log $body -Level TRACE
+    Write-Action1Log "=============================" -Level TRACE
+
     try {
-        $response = Invoke-RestMethod -Uri $uri -Method POST -Headers @{
-            'Authorization' = "Bearer $token"
-            'Content-Type'  = 'application/json'
-            'Accept'        = 'application/json'
-        } -Body $body -ErrorAction Stop
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $webResponse = Invoke-WebRequest -Uri $uri -Method POST -Headers $headers -Body $body -ErrorAction Stop
+        $stopwatch.Stop()
+
+        # TRACE: Log full response details
+        Write-Action1Log "========== RESPONSE ==========" -Level TRACE
+        Write-Action1Log "HTTP Status: $($webResponse.StatusCode) $($webResponse.StatusDescription)" -Level TRACE
+        Write-Action1Log "Duration: $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
+        Write-Action1Log "Response Headers:" -Level TRACE
+        foreach ($headerName in $webResponse.Headers.Keys) {
+            $headerValue = $webResponse.Headers[$headerName]
+            if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
+            Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+        }
+        Write-Action1Log "Content-Length: $($webResponse.Content.Length) bytes" -Level TRACE
+        Write-Action1Log "Response Body:" -Level TRACE
+        Write-Action1Log $webResponse.Content -Level TRACE
+        Write-Action1Log "==============================" -Level TRACE
+
+        $response = $webResponse.Content | ConvertFrom-Json
 
         if (-not $response.id) {
             throw "Version creation returned no ID"
@@ -1917,11 +2091,46 @@ function Initialize-Action1SoftwareRepoUpload {
         'X-Upload-Content-Length' = $FileSize.ToString()
     }
 
+    # TRACE: Log full request details
+    Write-Action1Log "========== UPLOAD INIT REQUEST ==========" -Level TRACE
+    Write-Action1Log "POST $uploadInitUrl" -Level TRACE
+    Write-Action1Log "Request Headers:" -Level TRACE
+    foreach ($headerName in $headers.Keys) {
+        $headerValue = if ($headerName -eq 'Authorization') { "Bearer ***MASKED***" } else { $headers[$headerName] }
+        Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+    }
+    Write-Action1Log "Request Body: (empty)" -Level TRACE
+    Write-Action1Log "==========================================" -Level TRACE
+
     try {
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
         # Use -SkipHttpErrorCheck to handle 308 responses (PowerShell 7+)
         $response = Invoke-WebRequest -Uri $uploadInitUrl -Method POST -Headers $headers -SkipHttpErrorCheck
 
+        $stopwatch.Stop()
         $statusCode = $response.StatusCode
+        $statusDescription = $response.StatusDescription
+
+        # TRACE: Log full response details
+        Write-Action1Log "========== UPLOAD INIT RESPONSE ==========" -Level TRACE
+        Write-Action1Log "HTTP Status: $statusCode $statusDescription" -Level TRACE
+        Write-Action1Log "Duration: $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
+        Write-Action1Log "Response Headers:" -Level TRACE
+        foreach ($headerName in $response.Headers.Keys) {
+            $headerValue = $response.Headers[$headerName]
+            if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
+            Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+        }
+        $contentType = if ($response.Headers['Content-Type']) { $response.Headers['Content-Type'] } else { 'none' }
+        Write-Action1Log "Content-Type: $contentType" -Level TRACE
+        Write-Action1Log "Content-Length: $($response.Content.Length) bytes" -Level TRACE
+        if ($response.Content) {
+            Write-Action1Log "Response Body:" -Level TRACE
+            Write-Action1Log $response.Content -Level TRACE
+        }
+        Write-Action1Log "===========================================" -Level TRACE
+
         Write-Action1Log "Upload init response status: $statusCode" -Level DEBUG
 
         if ($statusCode -ne 308) {
@@ -2062,6 +2271,7 @@ function Invoke-Action1SoftwareRepoUpload {
         $buffer = New-Object byte[] $chunkSize
         $offset = 0
         $chunkNumber = 0
+        $uploadComplete = $false
 
         try {
             while ($offset -lt $fileSize) {
@@ -2083,32 +2293,83 @@ function Invoke-Action1SoftwareRepoUpload {
                     -PercentComplete $percentComplete `
                     -Id 1
 
-                Write-Action1Log "Uploading chunk $($chunkNumber)/$($totalChunks): $contentRange" -Level DEBUG
+                Write-Action1Log "Uploading chunk $($chunkNumber)/$($totalChunks): $contentRange (chunk bytes: $bytesRead, total file: $fileSize)" -Level DEBUG
 
-                # Prepare the chunk data (only the bytes we actually read)
-                # Must create proper byte[] - array slicing creates Object[] which causes Content-Length issues
+                # Prepare the chunk data - write to temp file for reliable binary upload
                 $chunkData = New-Object byte[] $bytesRead
                 [Array]::Copy($buffer, 0, $chunkData, 0, $bytesRead)
 
-                # Upload the chunk using PUT with Content-Range
-                # Use -SkipHttpErrorCheck to handle 308 responses (PowerShell 7+)
-                $response = Invoke-WebRequest -Uri $uploadUrl -Method PUT -Headers @{
+                # Write chunk to temp file for reliable binary upload
+                $tempChunkFile = [System.IO.Path]::GetTempFileName()
+
+                $chunkHeaders = @{
                     'Authorization'  = "Bearer $token"
                     'Content-Type'   = 'application/octet-stream'
-                    'Content-Length' = $bytesRead.ToString()
                     'Content-Range'  = $contentRange
-                } -Body $chunkData -SkipHttpErrorCheck
+                }
+
+                # TRACE: Log full chunk request details
+                Write-Action1Log "========== CHUNK $chunkNumber REQUEST ==========" -Level TRACE
+                Write-Action1Log "PUT $uploadUrl" -Level TRACE
+                Write-Action1Log "Request Headers:" -Level TRACE
+                Write-Action1Log "  Authorization: Bearer ***MASKED***" -Level TRACE
+                Write-Action1Log "  Content-Type: $($chunkHeaders['Content-Type'])" -Level TRACE
+                Write-Action1Log "  Content-Range: $($chunkHeaders['Content-Range'])" -Level TRACE
+                Write-Action1Log "Request Body: <binary data, $bytesRead bytes>" -Level TRACE
+                Write-Action1Log "===============================================" -Level TRACE
+
+                try {
+                    [System.IO.File]::WriteAllBytes($tempChunkFile, $chunkData)
+
+                    $chunkStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+                    # Upload the chunk using PUT with Content-Range
+                    # Use -SkipHttpErrorCheck to handle 308 responses (PowerShell 7+)
+                    $response = Invoke-WebRequest -Uri $uploadUrl -Method PUT -Headers $chunkHeaders -InFile $tempChunkFile -SkipHttpErrorCheck
+
+                    $chunkStopwatch.Stop()
+                }
+                finally {
+                    if (Test-Path $tempChunkFile) {
+                        Remove-Item $tempChunkFile -Force -ErrorAction SilentlyContinue
+                    }
+                }
 
                 $statusCode = $response.StatusCode
+                $statusDescription = $response.StatusDescription
+
+                # TRACE: Log full chunk response details
+                Write-Action1Log "========== CHUNK $chunkNumber RESPONSE ==========" -Level TRACE
+                Write-Action1Log "HTTP Status: $statusCode $statusDescription" -Level TRACE
+                Write-Action1Log "Duration: $($chunkStopwatch.ElapsedMilliseconds)ms" -Level TRACE
+                Write-Action1Log "Response Headers:" -Level TRACE
+                foreach ($headerName in $response.Headers.Keys) {
+                    $headerValue = $response.Headers[$headerName]
+                    if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
+                    Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+                }
+                $contentType = if ($response.Headers['Content-Type']) { $response.Headers['Content-Type'] } else { 'none' }
+                Write-Action1Log "Content-Type: $contentType" -Level TRACE
+                Write-Action1Log "Content-Length: $($response.Content.Length) bytes" -Level TRACE
+                if ($response.Content -and $response.Content.Length -gt 0) {
+                    Write-Action1Log "Response Body:" -Level TRACE
+                    Write-Action1Log $response.Content -Level TRACE
+                }
+                Write-Action1Log "================================================" -Level TRACE
+
+                # Log response details for debugging
+                $rangeHeader = $response.Headers['Range']
+                Write-Action1Log "Chunk $chunkNumber response: Status=$statusCode, Range=$rangeHeader" -Level DEBUG
 
                 # Check response status
                 if ($statusCode -eq 308) {
-                    # Continue uploading
-                    Write-Action1Log "Chunk $chunkNumber uploaded successfully (308 - continue)" -Level TRACE
+                    # Continue uploading - 308 means server received data but expects more
+                    Write-Action1Log "Chunk $chunkNumber uploaded successfully (308 - continue)" -Level DEBUG
                 }
                 elseif ($statusCode -in @(200, 201, 204)) {
                     # Upload complete
                     Write-Action1Log "Chunk $chunkNumber uploaded - upload complete ($statusCode)" -Level INFO
+                    $uploadComplete = $true
                     break
                 }
                 else {
@@ -2123,6 +2384,12 @@ function Invoke-Action1SoftwareRepoUpload {
         finally {
             $fileStream.Close()
             $fileStream.Dispose()
+        }
+
+        # Check if upload actually completed
+        if (-not $uploadComplete) {
+            Write-Action1Log "WARNING: All chunks uploaded but server did not confirm completion (expected 200, got 308 on all chunks)" -Level WARN
+            Write-Host "⚠ Upload may be incomplete: $fileName - server did not confirm completion" -ForegroundColor Yellow
         }
 
         Write-Action1Progress -Activity "Uploading $fileName" -Status "Complete" -PercentComplete 100 -Id 1
@@ -2248,12 +2515,50 @@ function Get-Action1AccessToken {
     }
 
     try {
-        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $response = Invoke-RestMethod -Uri $tokenUrl -Method POST -Body ($body | ConvertTo-Json) -ContentType 'application/json' -ErrorAction Stop
-        $stopwatch.Stop()
+        $bodyJson = $body | ConvertTo-Json
 
-        Write-Action1Log "Token request completed in $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
-        Write-Action1Log "Token response" -Level TRACE -Data @{
+        # TRACE: Log full request details
+        Write-Action1Log "========== TOKEN REQUEST ==========" -Level TRACE
+        Write-Action1Log "POST $tokenUrl" -Level TRACE
+        Write-Action1Log "Content-Type: application/json" -Level TRACE
+        Write-Action1Log "Request Body: $($bodyJson -replace $script:Action1ClientSecret, '***MASKED***')" -Level TRACE
+        Write-Action1Log "===================================" -Level TRACE
+
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+        # Use Invoke-WebRequest for full HTTP details
+        $webResponse = Invoke-WebRequest -Uri $tokenUrl -Method POST -Body $bodyJson -ContentType 'application/json' -ErrorAction Stop
+
+        $stopwatch.Stop()
+        $statusCode = $webResponse.StatusCode
+        $statusDescription = $webResponse.StatusDescription
+
+        # TRACE: Log full response details
+        Write-Action1Log "========== TOKEN RESPONSE ==========" -Level TRACE
+        Write-Action1Log "HTTP Status: $statusCode $statusDescription" -Level TRACE
+        Write-Action1Log "Duration: $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
+
+        # Log response headers
+        Write-Action1Log "Response Headers:" -Level TRACE
+        foreach ($headerName in $webResponse.Headers.Keys) {
+            $headerValue = $webResponse.Headers[$headerName]
+            if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
+            Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+        }
+
+        # Log content details (mask token in raw output)
+        $contentType = if ($webResponse.Headers['Content-Type']) { $webResponse.Headers['Content-Type'] } else { 'unknown' }
+        Write-Action1Log "Content-Type: $contentType" -Level TRACE
+        Write-Action1Log "Content-Length: $($webResponse.Content.Length) bytes" -Level TRACE
+        Write-Action1Log "Response Body (raw, token masked):" -Level TRACE
+        $maskedContent = $webResponse.Content -replace '"access_token"\s*:\s*"[^"]+', '"access_token":"***MASKED***'
+        Write-Action1Log $maskedContent -Level TRACE
+        Write-Action1Log "====================================" -Level TRACE
+
+        # Parse response
+        $response = $webResponse.Content | ConvertFrom-Json
+
+        Write-Action1Log "Token response (parsed, masked)" -Level TRACE -Data @{
             access_token = "***MASKED*** (length: $($response.access_token.Length))"
             expires_in   = $response.expires_in
             token_type   = $response.token_type
@@ -2270,6 +2575,25 @@ function Get-Action1AccessToken {
     }
     catch {
         Write-Action1Log "Failed to obtain access token" -Level ERROR -ErrorRecord $_
+
+        # TRACE: Log error details
+        if ($_.Exception.Response) {
+            $errorResponse = $_.Exception.Response
+            Write-Action1Log "========== TOKEN ERROR RESPONSE ==========" -Level TRACE
+            Write-Action1Log "HTTP Status: $([int]$errorResponse.StatusCode) $($errorResponse.StatusCode)" -Level TRACE
+            try {
+                $reader = [System.IO.StreamReader]::new($errorResponse.GetResponseStream())
+                $errorBody = $reader.ReadToEnd()
+                $reader.Close()
+                Write-Action1Log "Error Response Body:" -Level TRACE
+                Write-Action1Log $errorBody -Level TRACE
+            }
+            catch {
+                Write-Action1Log "Could not read error response body" -Level TRACE
+            }
+            Write-Action1Log "===========================================" -Level TRACE
+        }
+
         throw "Authentication failed: $($_.Exception.Message)"
     }
 }
@@ -2367,29 +2691,76 @@ function Invoke-Action1ApiRequest {
         Write-Action1Log "Executing API request..." -Level INFO
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-        $response = Invoke-RestMethod @params
+        # Use Invoke-WebRequest for full HTTP details at TRACE level
+        $webResponse = Invoke-WebRequest @params
 
         $stopwatch.Stop()
-        Write-Action1Log "API request completed successfully in $($stopwatch.ElapsedMilliseconds)ms" -Level INFO
+        $statusCode = $webResponse.StatusCode
+        $statusDescription = $webResponse.StatusDescription
+
+        Write-Action1Log "API request completed: HTTP $statusCode in $($stopwatch.ElapsedMilliseconds)ms" -Level INFO
 
         # TRACE: Log complete response details
-        Write-Action1Log "--- RESPONSE SUMMARY ---" -Level TRACE
-        Write-Action1Log "Status: Success" -Level TRACE
+        Write-Action1Log "========== RESPONSE ==========" -Level TRACE
+        Write-Action1Log "HTTP Status: $statusCode $statusDescription" -Level TRACE
         Write-Action1Log "Duration: $($stopwatch.ElapsedMilliseconds)ms" -Level TRACE
-        $responseJson = $response | ConvertTo-Json -Depth 10 -Compress
-        Write-Action1Log "Response size: $($responseJson.Length) bytes" -Level TRACE
-        Write-Action1Log "------------------------" -Level TRACE
-        Write-Action1Log "Response data" -Level TRACE -Data $response
+
+        # Log all response headers
+        Write-Action1Log "Response Headers:" -Level TRACE
+        foreach ($headerName in $webResponse.Headers.Keys) {
+            $headerValue = $webResponse.Headers[$headerName]
+            if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
+            Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
+        }
+
+        # Log content details
+        $contentLength = if ($webResponse.Headers['Content-Length']) { $webResponse.Headers['Content-Length'] } else { $webResponse.Content.Length }
+        $contentType = if ($webResponse.Headers['Content-Type']) { $webResponse.Headers['Content-Type'] } else { 'unknown' }
+        Write-Action1Log "Content-Type: $contentType" -Level TRACE
+        Write-Action1Log "Content-Length: $contentLength bytes" -Level TRACE
+
+        # Log raw response body
+        Write-Action1Log "Response Body (raw):" -Level TRACE
+        Write-Action1Log $webResponse.Content -Level TRACE
+        Write-Action1Log "================================" -Level TRACE
+
+        # Parse JSON response
+        $response = $webResponse.Content | ConvertFrom-Json
+
+        # Also log parsed data
+        Write-Action1Log "Response data (parsed)" -Level TRACE -Data $response
 
         return $response
     }
     catch {
-        Write-Action1Log "API request failed" -Level ERROR -ErrorRecord $_
-        
+        $stopwatch.Stop()
+        Write-Action1Log "API request failed after $($stopwatch.ElapsedMilliseconds)ms" -Level ERROR -ErrorRecord $_
+
+        # Try to extract more details from the exception
+        if ($_.Exception.Response) {
+            $errorResponse = $_.Exception.Response
+            Write-Action1Log "========== ERROR RESPONSE ==========" -Level TRACE
+            Write-Action1Log "HTTP Status: $([int]$errorResponse.StatusCode) $($errorResponse.StatusCode)" -Level TRACE
+            Write-Action1Log "Status Description: $($errorResponse.ReasonPhrase)" -Level TRACE
+
+            # Try to read error response body
+            try {
+                $reader = [System.IO.StreamReader]::new($errorResponse.GetResponseStream())
+                $errorBody = $reader.ReadToEnd()
+                $reader.Close()
+                Write-Action1Log "Error Response Body:" -Level TRACE
+                Write-Action1Log $errorBody -Level TRACE
+            }
+            catch {
+                Write-Action1Log "Could not read error response body: $_" -Level TRACE
+            }
+            Write-Action1Log "=====================================" -Level TRACE
+        }
+
         if ($_.ErrorDetails.Message) {
             Write-Action1Log "Error details from API" -Level ERROR -Data ($_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue)
         }
-        
+
         throw
     }
 }
@@ -3416,20 +3787,22 @@ function Set-Action1ApiCredentials {
     # Prompt for region if not provided
     if (-not $Region) {
         Write-Host "`nSelect Action1 Region:" -ForegroundColor Cyan
-        Write-Host "  [1] NorthAmerica (app.action1.com)"
-        Write-Host "  [2] Europe (app.eu.action1.com)"
-        Write-Host "  [3] Australia (app.au.action1.com)"
+        Write-Host "  [0] NorthAmerica (app.action1.com) (default)"
+        Write-Host "  [1] Europe (app.eu.action1.com)"
+        Write-Host "  [2] Australia (app.au.action1.com)"
 
-        $selection = Read-Host "`nEnter selection (1-3)"
+        $selection = Read-Host "`nEnter selection (0-2)"
         $Region = switch ($selection) {
-            '1' { 'NorthAmerica' }
-            '2' { 'Europe' }
-            '3' { 'Australia' }
+            '0' { 'NorthAmerica' }
+            '' { 'NorthAmerica' }
+            '1' { 'Europe' }
+            '2' { 'Australia' }
             default {
                 Write-Warning "Invalid selection. Defaulting to NorthAmerica."
                 'NorthAmerica'
             }
         }
+        Write-Host "Selected: $Region" -ForegroundColor Green
     }
 
     Write-Action1Log "Selected region: $Region" -Level INFO
@@ -4272,31 +4645,29 @@ function New-Action1AppPackage {
 
     # Update Type
     $updateTypes = @('Regular Updates', 'Security Updates', 'Critical Updates')
-    Write-Host "`nUpdate Type:"
+    Write-Host "`nUpdate Type:" -ForegroundColor Cyan
     for ($i = 0; $i -lt $updateTypes.Count; $i++) {
         $marker = if ($i -eq 0) { " (default)" } else { "" }
         Write-Host "  [$i] $($updateTypes[$i])$marker"
     }
-    Write-Host "Select [0]: " -NoNewline
-    $updateTypeSelection = Read-Host
+    $updateTypeSelection = Read-Host "`nEnter selection (0-$($updateTypes.Count - 1))"
     if (-not $updateTypeSelection) { $updateTypeSelection = "0" }
     $updateType = $updateTypes[[int]$updateTypeSelection]
-    Write-Host "  Selected: $updateType" -ForegroundColor Green
+    Write-Host "Selected: $updateType" -ForegroundColor Green
 
     # Security Severity (only if Security Updates)
     $securitySeverity = "Unspecified"
     if ($updateType -eq 'Security Updates') {
         $severities = @('Unspecified', 'Low', 'Medium', 'High', 'Critical')
-        Write-Host "`nSecurity Severity:"
+        Write-Host "`nSecurity Severity:" -ForegroundColor Cyan
         for ($i = 0; $i -lt $severities.Count; $i++) {
             $marker = if ($i -eq 0) { " (default)" } else { "" }
             Write-Host "  [$i] $($severities[$i])$marker"
         }
-        Write-Host "Select [0]: " -NoNewline
-        $severitySelection = Read-Host
+        $severitySelection = Read-Host "`nEnter selection (0-$($severities.Count - 1))"
         if (-not $severitySelection) { $severitySelection = "0" }
         $securitySeverity = $severities[[int]$severitySelection]
-        Write-Host "  Selected: $securitySeverity" -ForegroundColor Green
+        Write-Host "Selected: $securitySeverity" -ForegroundColor Green
     }
 
     # CVEs (optional)
@@ -4312,7 +4683,7 @@ function New-Action1AppPackage {
     $eula = Read-Host
 
     # Additional Actions (optional)
-    Write-Host "`n--- Additional Actions (Optional) ---" -ForegroundColor Cyan
+    Write-Host "`nAdditional Actions (optional):" -ForegroundColor Cyan
     $actionOptions = @(
         @{ Name = 'Deploy Software'; Value = 'deploy_software' }
         @{ Name = 'Deploy Updates'; Value = 'deploy_updates' }
@@ -4321,12 +4692,10 @@ function New-Action1AppPackage {
         @{ Name = 'Uninstall Software'; Value = 'uninstall_software' }
         @{ Name = 'Update Ring'; Value = 'update_ring' }
     )
-    Write-Host "Select additional actions to associate (comma-separated numbers, Enter to skip):"
     for ($i = 0; $i -lt $actionOptions.Count; $i++) {
         Write-Host "  [$i] $($actionOptions[$i].Name)"
     }
-    Write-Host "Select: " -NoNewline
-    $actionsInput = Read-Host
+    $actionsInput = Read-Host "`nEnter selection(s) (0-$($actionOptions.Count - 1), comma-separated, Enter to skip)"
 
     $additionalActions = @()
     if ($actionsInput) {
@@ -4350,7 +4719,7 @@ function New-Action1AppPackage {
             }
         }
         if ($additionalActions.Count -gt 0) {
-            Write-Host "  Selected: $($additionalActions.Name -join ', ')" -ForegroundColor Green
+            Write-Host "Selected: $($additionalActions.Name -join ', ')" -ForegroundColor Green
         }
     }
 
@@ -4646,7 +5015,7 @@ function Deploy-Action1App {
         $repositoryId = $repoSelection.Id
         $isNewRepo = $repoSelection.IsNew
 
-        Write-Host "✓ Repository ID: $repositoryId" -ForegroundColor Green
+        Write-Host "Repository ID: $repositoryId" -ForegroundColor Green
 
         # Step 3: Create version
         Write-Host "`nStep 2: Creating version $($manifest.Version)..." -ForegroundColor Cyan
@@ -4667,6 +5036,12 @@ function Deploy-Action1App {
         $updateType = if ($manifest.UpdateInfo -and $manifest.UpdateInfo.UpdateType) { $manifest.UpdateInfo.UpdateType } else { 'Regular Updates' }
         $securitySeverity = if ($manifest.UpdateInfo -and $manifest.UpdateInfo.SecuritySeverity) { $manifest.UpdateInfo.SecuritySeverity } else { 'Unspecified' }
 
+        # Build hashtable of all platform files
+        $allPlatformFiles = @{}
+        foreach ($inst in $installers) {
+            $allPlatformFiles[$inst.Platform] = $inst.FileName
+        }
+
         $versionResponse = New-Action1RepositoryVersion `
             -OrganizationId $OrganizationId `
             -RepositoryId $repositoryId `
@@ -4677,17 +5052,18 @@ function Deploy-Action1App {
             -InstallType $manifest.InstallerType `
             -ReleaseDate $releaseDate `
             -UpdateType $updateType `
-            -SecuritySeverity $securitySeverity
+            -SecuritySeverity $securitySeverity `
+            -AllPlatformFiles $allPlatformFiles
 
         $versionId = $versionResponse.id
-        Write-Host "✓ Version created with ID: $versionId" -ForegroundColor Green
+        Write-Host "Version created with ID: $versionId" -ForegroundColor Green
 
         # Step 4: Upload installer file(s)
         Write-Host "`nStep 3: Uploading installer file(s)..." -ForegroundColor Cyan
 
         foreach ($installer in $installers) {
-            Write-Host "  Uploading: $($installer.FileName) ($($installer.Platform))..." -ForegroundColor White
-
+            Write-Host "Uploading: $($installer.FileName) ($($installer.Platform))..." -ForegroundColor White
+            
             $uploadResult = Invoke-Action1SoftwareRepoUpload `
                 -FilePath $installer.Path `
                 -OrganizationId $OrganizationId `
@@ -4696,7 +5072,7 @@ function Deploy-Action1App {
                 -Platform $installer.Platform `
                 -ChunkSizeMB 24
 
-            Write-Host "  ✓ Upload complete: $($installer.FileName)" -ForegroundColor Green
+            Write-Host "Upload complete: $($installer.FileName)" -ForegroundColor Green
         }
 
         # Update manifest with IDs
@@ -4960,7 +5336,7 @@ function Get-Action1App {
         }
 
         $selectedRepo = $repos[$repoNum - 1]
-        Write-Host "Selected repo: $($selectedRepo.name)" -ForegroundColor Green
+        Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
 
         # Fetch package with all fields to get embedded versions array
         Write-Action1Log "Fetching versions for $($selectedRepo.name)..." -Level INFO
@@ -5004,7 +5380,7 @@ function Get-Action1App {
         }
 
         $selectedVersion = $versions[$verNum - 1]
-        Write-Host "Selected version: v$($selectedVersion.version)" -ForegroundColor Green
+        Write-Host "Selected: v$($selectedVersion.version)" -ForegroundColor Green
 
         # Fetch full version details
         Write-Action1Log "Fetching version details..." -Level INFO
@@ -5360,7 +5736,7 @@ function Copy-Action1Automation {
 
         # Select source organization
         if (-not $SourceOrgId) {
-            Write-Host "`n=== Select SOURCE Organization ===" -ForegroundColor Cyan
+            Write-Host "`nSelect Source Organization:" -ForegroundColor Cyan
             for ($i = 0; $i -lt $orgs.Count; $i++) {
                 Write-Host "  [$($i + 1)] $($orgs[$i].name)"
             }
@@ -5374,7 +5750,7 @@ function Copy-Action1Automation {
 
             $SourceOrgId = $orgs[$selNum - 1].id
             $sourceOrgName = $orgs[$selNum - 1].name
-            Write-Host "Source: $sourceOrgName" -ForegroundColor Green
+            Write-Host "Selected: $sourceOrgName" -ForegroundColor Green
         }
         else {
             $sourceOrgName = ($orgs | Where-Object { $_.id -eq $SourceOrgId }).name
@@ -5391,15 +5767,15 @@ function Copy-Action1Automation {
 
         # Select automations to copy
         if (-not $AutomationIds) {
-            Write-Host "`n=== Select Automations to Copy ===" -ForegroundColor Cyan
-            Write-Host "  [0] Select ALL automations"
+            Write-Host "`nSelect Automations to Copy:" -ForegroundColor Cyan
+            Write-Host "  [0] ALL automations"
             for ($i = 0; $i -lt $automations.Count; $i++) {
                 $auto = $automations[$i]
                 $status = if ($auto.enabled) { "[Enabled]" } else { "[Disabled]" }
                 Write-Host "  [$($i + 1)] $($auto.name) $status"
             }
 
-            $autoInput = Read-Host "`nEnter selection(s) - comma-separated for multiple (e.g., 1,3,5) or 0 for all"
+            $autoInput = Read-Host "`nEnter selection (0-$($automations.Count), comma-separated for multiple)"
 
             if ($autoInput -eq '0') {
                 $AutomationIds = $automations | ForEach-Object { $_.id }
@@ -5419,14 +5795,14 @@ function Copy-Action1Automation {
 
         # Select destination organizations
         if (-not $DestinationOrgIds) {
-            Write-Host "`n=== Select DESTINATION Organization(s) ===" -ForegroundColor Cyan
-            Write-Host "  [0] Select ALL other organizations"
+            Write-Host "`nSelect Destination Organization(s):" -ForegroundColor Cyan
+            Write-Host "  [0] ALL other organizations"
             $otherOrgs = $orgs | Where-Object { $_.id -ne $SourceOrgId }
             for ($i = 0; $i -lt $otherOrgs.Count; $i++) {
                 Write-Host "  [$($i + 1)] $($otherOrgs[$i].name)"
             }
 
-            $destInput = Read-Host "`nEnter selection(s) - comma-separated for multiple (e.g., 1,3) or 0 for all"
+            $destInput = Read-Host "`nEnter selection (0-$($otherOrgs.Count), comma-separated for multiple)"
 
             if ($destInput -eq '0') {
                 $DestinationOrgIds = $otherOrgs | ForEach-Object { $_.id }
@@ -5445,7 +5821,7 @@ function Copy-Action1Automation {
         }
 
         # Confirm the operation
-        Write-Host "`n=== Copy Summary ===" -ForegroundColor Yellow
+        Write-Host "`nCopy Summary:" -ForegroundColor Yellow
         Write-Host "Source: $sourceOrgName"
         Write-Host "Automations: $($AutomationIds.Count)"
         Write-Host "Destinations: $($DestinationOrgIds.Count) organization(s)"
