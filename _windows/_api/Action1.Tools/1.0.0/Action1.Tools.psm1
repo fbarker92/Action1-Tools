@@ -2204,6 +2204,17 @@ function Invoke-Action1SoftwareRepoUpload {
         Size of each upload chunk in megabytes. Default is 24MB.
         Minimum is 5MB.
 
+    .PARAMETER ProgressId
+        The progress bar ID for this upload. Default is 1.
+        Use different IDs for parallel uploads.
+
+    .PARAMETER ProgressState
+        A synchronized hashtable for sharing progress state across parallel uploads.
+        Used by Invoke-Action1MultiFileUpload.
+
+    .PARAMETER ShowProgress
+        Whether to show progress bars. Default is true.
+
     .EXAMPLE
         Invoke-Action1SoftwareRepoUpload -FilePath "C:\installer.msi" `
             -OrganizationId "all" -PackageId "pkg123" -VersionId "ver456" `
@@ -2235,7 +2246,19 @@ function Invoke-Action1SoftwareRepoUpload {
 
         [Parameter()]
         [ValidateRange(5, 100)]
-        [int]$ChunkSizeMB = 24
+        [int]$ChunkSizeMB = 24,
+
+        [Parameter()]
+        [int]$ProgressId = 1,
+
+        [Parameter()]
+        [hashtable]$ProgressState,
+
+        [Parameter()]
+        [bool]$ShowProgress = $true,
+
+        [Parameter()]
+        [hashtable]$OverallContext
     )
 
     # Validate file exists
@@ -2249,12 +2272,38 @@ function Invoke-Action1SoftwareRepoUpload {
     $chunkSize = $ChunkSizeMB * 1024 * 1024
     $totalChunks = [Math]::Ceiling($fileSize / $chunkSize)
 
+    # Platform display name for progress
+    $platformDisplay = switch ($Platform) {
+        'Windows_64' { 'x64' }
+        'Windows_32' { 'x86' }
+        'Windows_ARM64' { 'ARM64' }
+        'Mac_AppleSilicon' { 'Apple Silicon' }
+        'Mac_IntelCPU' { 'Intel' }
+        default { $Platform }
+    }
+
     Write-Action1Log "Starting software repository upload" -Level INFO
     Write-Action1Log "File: $fileName, Size: $(ConvertTo-FileSize -Bytes $fileSize), Chunks: $totalChunks x ${ChunkSizeMB}MB" -Level INFO
 
+    # Initialize progress state if provided
+    if ($ProgressState) {
+        $ProgressState[$Platform] = @{
+            FileName = $fileName
+            FileSize = $fileSize
+            BytesUploaded = 0
+            ChunkNumber = 0
+            TotalChunks = $totalChunks
+            Status = 'Initializing'
+            Speed = 0
+            StartTime = Get-Date
+        }
+    }
+
     try {
         # Step 1: Initialize upload session
-        Write-Action1Progress -Activity "Uploading $fileName" -Status "Initializing upload..." -PercentComplete 0 -Id 1
+        if ($ShowProgress) {
+            Write-Action1Progress -Activity "[$platformDisplay] $fileName" -Status "Initializing upload..." -PercentComplete 0 -Id $ProgressId
+        }
 
         $uploadUrl = Initialize-Action1SoftwareRepoUpload `
             -OrganizationId $OrganizationId `
@@ -2272,6 +2321,7 @@ function Invoke-Action1SoftwareRepoUpload {
         $offset = 0
         $chunkNumber = 0
         $uploadComplete = $false
+        $uploadStartTime = Get-Date
 
         try {
             while ($offset -lt $fileSize) {
@@ -2283,24 +2333,37 @@ function Invoke-Action1SoftwareRepoUpload {
                 $endByte = $offset + $bytesRead - 1
                 $contentRange = "bytes $startByte-$endByte/$fileSize"
 
+                # Calculate progress and speed
                 $percentComplete = [int](($offset / $fileSize) * 100)
                 $uploadedSize = ConvertTo-FileSize -Bytes $offset
                 $totalSize = ConvertTo-FileSize -Bytes $fileSize
+                $elapsed = (Get-Date) - $uploadStartTime
+                $speed = if ($elapsed.TotalSeconds -gt 0) { $offset / $elapsed.TotalSeconds } else { 0 }
+                $speedDisplay = ConvertTo-FileSize -Bytes $speed
+                $remaining = if ($speed -gt 0) { ($fileSize - $offset) / $speed } else { 0 }
+                $remainingDisplay = if ($remaining -gt 60) { "{0:N0}m {1:N0}s" -f [Math]::Floor($remaining / 60), ($remaining % 60) } else { "{0:N0}s" -f $remaining }
 
-                Write-Action1Progress `
-                    -Activity "Uploading $fileName ($uploadedSize / $totalSize)" `
-                    -Status "Chunk $chunkNumber of $totalChunks" `
-                    -PercentComplete $percentComplete `
-                    -Id 1
+                # Update progress state if provided
+                if ($ProgressState) {
+                    $ProgressState[$Platform].BytesUploaded = $offset
+                    $ProgressState[$Platform].ChunkNumber = $chunkNumber
+                    $ProgressState[$Platform].Status = 'Uploading'
+                    $ProgressState[$Platform].Speed = $speed
+                }
+
+                if ($ShowProgress) {
+                    Write-Action1Progress `
+                        -Activity "[$platformDisplay] $fileName" `
+                        -Status "Chunk $chunkNumber/$totalChunks | $uploadedSize / $totalSize | $speedDisplay/s | ETA: $remainingDisplay" `
+                        -PercentComplete $percentComplete `
+                        -Id $ProgressId
+                }
 
                 Write-Action1Log "Uploading chunk $($chunkNumber)/$($totalChunks): $contentRange (chunk bytes: $bytesRead, total file: $fileSize)" -Level DEBUG
 
-                # Prepare the chunk data - write to temp file for reliable binary upload
+                # Prepare the chunk data
                 $chunkData = New-Object byte[] $bytesRead
                 [Array]::Copy($buffer, 0, $chunkData, 0, $bytesRead)
-
-                # Write chunk to temp file for reliable binary upload
-                $tempChunkFile = [System.IO.Path]::GetTempFileName()
 
                 $chunkHeaders = @{
                     'Authorization'  = "Bearer $token"
@@ -2318,22 +2381,24 @@ function Invoke-Action1SoftwareRepoUpload {
                 Write-Action1Log "Request Body: <binary data, $bytesRead bytes>" -Level TRACE
                 Write-Action1Log "===============================================" -Level TRACE
 
-                try {
-                    [System.IO.File]::WriteAllBytes($tempChunkFile, $chunkData)
-
-                    $chunkStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-
-                    # Upload the chunk using PUT with Content-Range
-                    # Use -SkipHttpErrorCheck to handle 308 responses (PowerShell 7+)
-                    $response = Invoke-WebRequest -Uri $uploadUrl -Method PUT -Headers $chunkHeaders -InFile $tempChunkFile -SkipHttpErrorCheck
-
-                    $chunkStopwatch.Stop()
+                # Upload chunk with real-time progress
+                $progressParams = @{
+                    Activity = "[$platformDisplay] $fileName"
+                    Id = $ProgressId
+                    FileOffset = $offset
+                    FileSize = $fileSize
+                    ChunkNumber = $chunkNumber
+                    TotalChunks = $totalChunks
+                    UploadStartTime = $uploadStartTime
+                    OverallContext = $OverallContext
                 }
-                finally {
-                    if (Test-Path $tempChunkFile) {
-                        Remove-Item $tempChunkFile -Force -ErrorAction SilentlyContinue
-                    }
-                }
+
+                $response = Send-ChunkWithProgress `
+                    -Uri $uploadUrl `
+                    -Headers $chunkHeaders `
+                    -Data $chunkData `
+                    -ProgressParams $progressParams `
+                    -ShowProgress $ShowProgress
 
                 $statusCode = $response.StatusCode
                 $statusDescription = $response.StatusDescription
@@ -2341,16 +2406,14 @@ function Invoke-Action1SoftwareRepoUpload {
                 # TRACE: Log full chunk response details
                 Write-Action1Log "========== CHUNK $chunkNumber RESPONSE ==========" -Level TRACE
                 Write-Action1Log "HTTP Status: $statusCode $statusDescription" -Level TRACE
-                Write-Action1Log "Duration: $($chunkStopwatch.ElapsedMilliseconds)ms" -Level TRACE
+                Write-Action1Log "Duration: $($response.ElapsedMilliseconds)ms" -Level TRACE
                 Write-Action1Log "Response Headers:" -Level TRACE
                 foreach ($headerName in $response.Headers.Keys) {
                     $headerValue = $response.Headers[$headerName]
-                    if ($headerValue -is [array]) { $headerValue = $headerValue -join ', ' }
                     Write-Action1Log "  $headerName`: $headerValue" -Level TRACE
                 }
-                $contentType = if ($response.Headers['Content-Type']) { $response.Headers['Content-Type'] } else { 'none' }
-                Write-Action1Log "Content-Type: $contentType" -Level TRACE
-                Write-Action1Log "Content-Length: $($response.Content.Length) bytes" -Level TRACE
+                $respContentType = if ($response.Headers['Content-Type']) { $response.Headers['Content-Type'] } else { 'none' }
+                Write-Action1Log "Content-Type: $respContentType" -Level TRACE
                 if ($response.Content -and $response.Content.Length -gt 0) {
                     Write-Action1Log "Response Body:" -Level TRACE
                     Write-Action1Log $response.Content -Level TRACE
@@ -2386,18 +2449,25 @@ function Invoke-Action1SoftwareRepoUpload {
             $fileStream.Dispose()
         }
 
+        # Update final progress state
+        if ($ProgressState) {
+            $ProgressState[$Platform].BytesUploaded = $fileSize
+            $ProgressState[$Platform].Status = if ($uploadComplete) { 'Complete' } else { 'Warning' }
+        }
+
         # Check if upload actually completed
         if (-not $uploadComplete) {
             Write-Action1Log "WARNING: All chunks uploaded but server did not confirm completion (expected 200, got 308 on all chunks)" -Level WARN
             Write-Host "⚠ Upload may be incomplete: $fileName - server did not confirm completion" -ForegroundColor Yellow
         }
 
-        Write-Action1Progress -Activity "Uploading $fileName" -Status "Complete" -PercentComplete 100 -Id 1
-        Start-Sleep -Milliseconds 500
-        Write-Progress -Activity "Uploading $fileName" -Id 1 -Completed
+        if ($ShowProgress) {
+            Write-Action1Progress -Activity "[$platformDisplay] $fileName" -Status "Complete" -PercentComplete 100 -Id $ProgressId
+            Start-Sleep -Milliseconds 300
+            Write-Progress -Activity "[$platformDisplay] $fileName" -Id $ProgressId -Completed
+        }
 
         Write-Action1Log "Software repository upload completed successfully" -Level INFO
-        Write-Host "✓ Upload completed: $fileName" -ForegroundColor Green
 
         return @{
             Success = $true
@@ -2405,18 +2475,414 @@ function Invoke-Action1SoftwareRepoUpload {
             FileSize = $fileSize
             ChunksUploaded = $chunkNumber
             Platform = $Platform
+            Duration = ((Get-Date) - $uploadStartTime).TotalSeconds
         }
     }
     catch {
-        Write-Progress -Activity "Uploading $fileName" -Id 1 -Completed
+        if ($ShowProgress) {
+            Write-Progress -Activity "[$platformDisplay] $fileName" -Id $ProgressId -Completed
+        }
+        if ($ProgressState) {
+            $ProgressState[$Platform].Status = 'Failed'
+        }
         Write-Action1Log "Software repository upload failed" -Level ERROR -ErrorRecord $_
         throw
     }
 }
 
+function Invoke-Action1MultiFileUpload {
+    <#
+    .SYNOPSIS
+        Uploads multiple files to Action1 software repository with progress tracking.
+
+    .DESCRIPTION
+        Uploads multiple installer files (for different architectures) with real-time
+        progress tracking for each file and overall progress.
+
+    .PARAMETER Uploads
+        Array of upload specifications. Each item should be a hashtable with:
+        - FilePath: Path to the file
+        - Platform: Platform identifier (Windows_64, Windows_32, etc.)
+
+    .PARAMETER OrganizationId
+        The organization ID (or "all" for enterprise-wide).
+
+    .PARAMETER PackageId
+        The software repository package ID.
+
+    .PARAMETER VersionId
+        The version ID to upload to.
+
+    .PARAMETER ChunkSizeMB
+        Size of each upload chunk in megabytes. Default is 24MB.
+
+    .EXAMPLE
+        $uploads = @(
+            @{ FilePath = "C:\x64\app.msi"; Platform = "Windows_64" }
+            @{ FilePath = "C:\x86\app.msi"; Platform = "Windows_32" }
+            @{ FilePath = "C:\arm64\app.msi"; Platform = "Windows_ARM64" }
+        )
+        Invoke-Action1MultiFileUpload -Uploads $uploads `
+            -OrganizationId "all" -PackageId "pkg123" -VersionId "ver456"
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [array]$Uploads,
+
+        [Parameter(Mandatory)]
+        [string]$OrganizationId,
+
+        [Parameter(Mandatory)]
+        [string]$PackageId,
+
+        [Parameter(Mandatory)]
+        [string]$VersionId,
+
+        [Parameter()]
+        [ValidateRange(5, 100)]
+        [int]$ChunkSizeMB = 24
+    )
+
+    # Platform display helper
+    function Get-PlatformDisplayName {
+        param([string]$Platform)
+        switch ($Platform) {
+            'Windows_64' { 'x64' }
+            'Windows_32' { 'x86' }
+            'Windows_ARM64' { 'ARM64' }
+            'Mac_AppleSilicon' { 'Apple Silicon' }
+            'Mac_IntelCPU' { 'Intel' }
+            default { $Platform }
+        }
+    }
+
+    $totalFiles = $Uploads.Count
+    Write-Action1Log "Starting multi-file upload of $totalFiles file(s)" -Level INFO
+
+    # Calculate total size for overall progress
+    $totalSize = 0
+    $fileInfos = @()
+    foreach ($upload in $Uploads) {
+        if (Test-Path $upload.FilePath) {
+            $fi = Get-Item $upload.FilePath
+            $totalSize += $fi.Length
+            $fileInfos += @{
+                Platform = $upload.Platform
+                FilePath = $upload.FilePath
+                Name = $fi.Name
+                Size = $fi.Length
+            }
+        }
+    }
+
+    Write-Host "`nUploading $totalFiles file(s) ($(ConvertTo-FileSize -Bytes $totalSize) total):" -ForegroundColor Cyan
+    foreach ($fi in $fileInfos) {
+        $platformDisplay = Get-PlatformDisplayName $fi.Platform
+        Write-Host "  • [$platformDisplay] $($fi.Name) ($(ConvertTo-FileSize -Bytes $fi.Size))" -ForegroundColor White
+    }
+    Write-Host ""
+
+    $overallStartTime = Get-Date
+    $totalBytesUploaded = 0
+    $results = @()
+    $fileIndex = 0
+
+    foreach ($fi in $fileInfos) {
+        $fileIndex++
+        $platformDisplay = Get-PlatformDisplayName $fi.Platform
+
+        # Show overall progress header
+        $overallPercent = if ($totalSize -gt 0) { [int](($totalBytesUploaded / $totalSize) * 100) } else { 0 }
+        $overallElapsed = (Get-Date) - $overallStartTime
+        $overallSpeed = if ($overallElapsed.TotalSeconds -gt 0) { $totalBytesUploaded / $overallElapsed.TotalSeconds } else { 0 }
+        $overallSpeedDisplay = if ($overallSpeed -gt 0) { ConvertTo-FileSize -Bytes $overallSpeed } else { "-- " }
+
+        Write-Action1Progress `
+            -Activity "Overall: $fileIndex of $totalFiles files" `
+            -Status "$(ConvertTo-FileSize -Bytes $totalBytesUploaded) / $(ConvertTo-FileSize -Bytes $totalSize) | $overallSpeedDisplay/s" `
+            -PercentComplete $overallPercent `
+            -Id 0
+
+        Write-Host "[$fileIndex/$totalFiles] [$platformDisplay] $($fi.Name)..." -ForegroundColor Cyan -NoNewline
+
+        # Build overall context for real-time overall progress updates
+        $overallContext = @{
+            StartTime = $overallStartTime
+            PriorBytes = $totalBytesUploaded
+            TotalSize = $totalSize
+            FileIndex = $fileIndex
+            TotalFiles = $totalFiles
+        }
+
+        try {
+            $result = Invoke-Action1SoftwareRepoUpload `
+                -FilePath $fi.FilePath `
+                -OrganizationId $OrganizationId `
+                -PackageId $PackageId `
+                -VersionId $VersionId `
+                -Platform $fi.Platform `
+                -ChunkSizeMB $ChunkSizeMB `
+                -ProgressId 1 `
+                -ShowProgress $true `
+                -OverallContext $overallContext
+
+            $totalBytesUploaded += $fi.Size
+
+            $results += @{
+                Success = $true
+                Platform = $fi.Platform
+                FileName = $fi.Name
+                FileSize = $fi.Size
+                Duration = $result.Duration
+            }
+
+            # Clear line and show success
+            Write-Host "`r[$fileIndex/$totalFiles] [$platformDisplay] $($fi.Name) " -ForegroundColor Green -NoNewline
+            Write-Host "✓ $(ConvertTo-FileSize -Bytes $fi.Size)" -ForegroundColor Green
+        }
+        catch {
+            $results += @{
+                Success = $false
+                Platform = $fi.Platform
+                FileName = $fi.Name
+                Error = $_.Exception.Message
+            }
+
+            Write-Host "`r[$fileIndex/$totalFiles] [$platformDisplay] $($fi.Name) " -ForegroundColor Red -NoNewline
+            Write-Host "✗ Failed" -ForegroundColor Red
+            Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor DarkRed
+        }
+    }
+
+    # Complete overall progress
+    Write-Progress -Activity "Overall" -Id 0 -Completed
+
+    # Summary
+    $successCount = ($results | Where-Object { $_.Success }).Count
+    $failCount = ($results | Where-Object { -not $_.Success }).Count
+    $totalDuration = ((Get-Date) - $overallStartTime).TotalSeconds
+    $avgSpeed = if ($totalDuration -gt 0) { $totalBytesUploaded / $totalDuration } else { 0 }
+
+    Write-Host ""
+    if ($failCount -eq 0) {
+        Write-Host "✓ All $successCount upload(s) completed successfully" -ForegroundColor Green
+    }
+    else {
+        Write-Host "⚠ $successCount succeeded, $failCount failed" -ForegroundColor Yellow
+    }
+    Write-Host "Total time: $([Math]::Round($totalDuration, 1))s | Average speed: $(ConvertTo-FileSize -Bytes $avgSpeed)/s" -ForegroundColor DarkGray
+
+    return $results
+}
+
 #endregion
 
 #region Helper Functions
+
+function Send-ChunkWithProgress {
+    <#
+    .SYNOPSIS
+        Uploads a chunk using HttpClient with progress estimation during transfer.
+
+    .DESCRIPTION
+        Uses .NET HttpClient to upload data while providing estimated progress
+        updates during the transfer. Since HttpClient doesn't provide true
+        byte-level progress callbacks, this function estimates progress based
+        on elapsed time and updates the progress bar smoothly.
+
+    .PARAMETER Uri
+        The URI to send the request to.
+
+    .PARAMETER Headers
+        Hashtable of headers to include (Authorization, Content-Range, etc.).
+
+    .PARAMETER Data
+        The byte array data to send.
+
+    .PARAMETER ProgressParams
+        Hashtable with progress display parameters:
+        - Activity: Progress bar activity text
+        - Id: Progress bar ID
+        - FileOffset: Current offset in the overall file
+        - FileSize: Total file size
+        - ChunkNumber: Current chunk number
+        - TotalChunks: Total number of chunks
+        - UploadStartTime: DateTime when upload started
+
+    .PARAMETER ShowProgress
+        Whether to show progress bar updates.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Uri,
+
+        [Parameter(Mandatory)]
+        [hashtable]$Headers,
+
+        [Parameter(Mandatory)]
+        [byte[]]$Data,
+
+        [Parameter()]
+        [hashtable]$ProgressParams,
+
+        [Parameter()]
+        [bool]$ShowProgress = $true
+    )
+
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromMinutes(30)
+
+    $dataStream = $null
+    $content = $null
+    $request = $null
+
+    try {
+        # Create the request
+        $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Put, $Uri)
+
+        # Add headers (except Content-Type which goes on content)
+        foreach ($key in $Headers.Keys) {
+            if ($key -notin @('Content-Type', 'Content-Range')) {
+                $null = $request.Headers.TryAddWithoutValidation($key, $Headers[$key])
+            }
+        }
+
+        # Create content from data
+        $dataStream = [System.IO.MemoryStream]::new($Data)
+        $content = [System.Net.Http.StreamContent]::new($dataStream)
+
+        # Set content headers
+        $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('application/octet-stream')
+        if ($Headers['Content-Range']) {
+            $null = $content.Headers.TryAddWithoutValidation('Content-Range', $Headers['Content-Range'])
+        }
+
+        $request.Content = $content
+
+        $chunkSize = $Data.Length
+        $chunkStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+        # Start async upload
+        $sendTask = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
+
+        # Animate progress while uploading
+        $animationChars = @('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+        $animIndex = 0
+
+        # For first chunk or when we don't have speed data, estimate based on time within chunk
+        # Assume ~2 MB/s baseline speed if no history (conservative estimate)
+        $baselineSpeed = 2 * 1024 * 1024
+
+        while (-not $sendTask.IsCompleted) {
+            if ($ShowProgress -and $ProgressParams) {
+                $totalElapsed = (Get-Date) - $ProgressParams.UploadStartTime
+                $chunkElapsed = $chunkStopwatch.ElapsedMilliseconds / 1000.0
+
+                # Calculate historical speed if we have prior data
+                $historicalSpeed = if ($totalElapsed.TotalSeconds -gt 0 -and $ProgressParams.FileOffset -gt 0) {
+                    $ProgressParams.FileOffset / $totalElapsed.TotalSeconds
+                } else {
+                    $baselineSpeed
+                }
+
+                # Estimate progress within this chunk
+                # Use time-based animation: smoothly progress through the chunk
+                # Estimate how long the chunk should take based on speed
+                $estimatedChunkDuration = if ($historicalSpeed -gt 0) { $chunkSize / $historicalSpeed } else { 10 }
+                $chunkProgress = [Math]::Min(0.95, $chunkElapsed / [Math]::Max(0.5, $estimatedChunkDuration))
+
+                $estimatedChunkBytes = [long]($chunkSize * $chunkProgress)
+                $estimatedTotalBytes = $ProgressParams.FileOffset + $estimatedChunkBytes
+
+                $percentComplete = [int](($estimatedTotalBytes / $ProgressParams.FileSize) * 100)
+                $percentComplete = [Math]::Max(1, [Math]::Min(99, $percentComplete))  # Keep between 1-99% during transfer
+
+                $uploadedDisplay = ConvertTo-FileSize -Bytes ([long]$estimatedTotalBytes)
+                $totalDisplay = ConvertTo-FileSize -Bytes $ProgressParams.FileSize
+
+                # Show current speed estimate (if we have any data, otherwise show "calculating...")
+                $currentSpeed = if ($chunkElapsed -gt 0.5) { $estimatedChunkBytes / $chunkElapsed } else { $historicalSpeed }
+                $speedDisplay = if ($totalElapsed.TotalSeconds -lt 0.5 -and $ProgressParams.FileOffset -eq 0) {
+                    "calculating..."
+                } else {
+                    "$(ConvertTo-FileSize -Bytes $currentSpeed)/s"
+                }
+
+                $remaining = if ($currentSpeed -gt 0) { ($ProgressParams.FileSize - $estimatedTotalBytes) / $currentSpeed } else { 0 }
+                $remainingDisplay = if ($remaining -gt 60) { "{0:N0}m {1:N0}s" -f [Math]::Floor($remaining / 60), ($remaining % 60) } else { "{0:N0}s" -f $remaining }
+
+                $spinner = $animationChars[$animIndex % $animationChars.Count]
+                $animIndex++
+
+                # Update file progress bar
+                Write-Action1Progress `
+                    -Activity $ProgressParams.Activity `
+                    -Status "$spinner Chunk $($ProgressParams.ChunkNumber)/$($ProgressParams.TotalChunks) | $uploadedDisplay / $totalDisplay | $speedDisplay | ETA: $remainingDisplay" `
+                    -PercentComplete $percentComplete `
+                    -Id $ProgressParams.Id
+
+                # Update overall progress bar if multi-file context provided
+                if ($ProgressParams.OverallContext) {
+                    $oc = $ProgressParams.OverallContext
+                    $overallElapsed = (Get-Date) - $oc.StartTime
+                    $overallEstimatedBytes = $oc.PriorBytes + $estimatedTotalBytes
+                    $overallPercent = [int](($overallEstimatedBytes / $oc.TotalSize) * 100)
+                    $overallPercent = [Math]::Max(1, [Math]::Min(99, $overallPercent))
+                    $overallSpeed = if ($overallElapsed.TotalSeconds -gt 0) { $overallEstimatedBytes / $overallElapsed.TotalSeconds } else { $currentSpeed }
+                    $overallSpeedDisplay = "$(ConvertTo-FileSize -Bytes $overallSpeed)/s"
+
+                    Write-Action1Progress `
+                        -Activity "Overall: $($oc.FileIndex) of $($oc.TotalFiles) files" `
+                        -Status "$spinner $(ConvertTo-FileSize -Bytes $overallEstimatedBytes) / $(ConvertTo-FileSize -Bytes $oc.TotalSize) | $overallSpeedDisplay" `
+                        -PercentComplete $overallPercent `
+                        -Id 0
+                }
+            }
+
+            Start-Sleep -Milliseconds 100
+        }
+
+        $chunkStopwatch.Stop()
+
+        # Get the response
+        $response = $sendTask.GetAwaiter().GetResult()
+
+        # Read response content
+        $responseContent = ""
+        if ($response.Content) {
+            $responseContent = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        }
+
+        # Build response headers hashtable
+        $responseHeaders = @{}
+        foreach ($header in $response.Headers) {
+            $responseHeaders[$header.Key] = ($header.Value -join ', ')
+        }
+        if ($response.Content -and $response.Content.Headers) {
+            foreach ($header in $response.Content.Headers) {
+                $responseHeaders[$header.Key] = ($header.Value -join ', ')
+            }
+        }
+
+        return @{
+            StatusCode = [int]$response.StatusCode
+            StatusDescription = $response.ReasonPhrase
+            Content = $responseContent
+            Headers = $responseHeaders
+            ElapsedMilliseconds = $chunkStopwatch.ElapsedMilliseconds
+        }
+    }
+    finally {
+        if ($dataStream) { $dataStream.Dispose() }
+        if ($content) { $content.Dispose() }
+        if ($request) { $request.Dispose() }
+        $client.Dispose()
+        $handler.Dispose()
+    }
+}
 
 function Get-AppNameMatchPatterns {
     <#
@@ -5061,18 +5527,40 @@ function Deploy-Action1App {
         # Step 4: Upload installer file(s)
         Write-Host "`nStep 3: Uploading installer file(s)..." -ForegroundColor Cyan
 
-        foreach ($installer in $installers) {
-            Write-Host "Uploading: $($installer.FileName) ($($installer.Platform))..." -ForegroundColor White
-            
-            $uploadResult = Invoke-Action1SoftwareRepoUpload `
-                -FilePath $installer.Path `
+        if ($installers.Count -gt 1) {
+            # Use parallel uploads for multiple architectures
+            $uploads = $installers | ForEach-Object {
+                @{
+                    FilePath = $_.Path
+                    Platform = $_.Platform
+                }
+            }
+
+            $uploadResults = Invoke-Action1MultiFileUpload `
+                -Uploads $uploads `
                 -OrganizationId $OrganizationId `
                 -PackageId $repositoryId `
                 -VersionId $versionId `
-                -Platform $installer.Platform `
                 -ChunkSizeMB 24
 
-            Write-Host "Upload complete: $($installer.FileName)" -ForegroundColor Green
+            $failedUploads = $uploadResults | Where-Object { -not $_.Success }
+            if ($failedUploads) {
+                throw "One or more uploads failed: $(($failedUploads | ForEach-Object { "$($_.Platform): $($_.Error)" }) -join '; ')"
+            }
+        }
+        else {
+            # Single file upload
+            foreach ($installer in $installers) {
+                $null = Invoke-Action1SoftwareRepoUpload `
+                    -FilePath $installer.Path `
+                    -OrganizationId $OrganizationId `
+                    -PackageId $repositoryId `
+                    -VersionId $versionId `
+                    -Platform $installer.Platform `
+                    -ChunkSizeMB 24
+
+                Write-Host "✓ Upload complete: $($installer.FileName)" -ForegroundColor Green
+            }
         }
 
         # Update manifest with IDs
