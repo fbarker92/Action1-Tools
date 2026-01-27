@@ -4633,8 +4633,8 @@ function New-Action1AppRepo {
         }
     }
 
-    # Sanitize vendor for folder lookup
-    $sanitizedVendorForLookup = $Publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    # Sanitize vendor for folder lookup (remove punctuation, replace spaces with underscores)
+    $sanitizedVendorForLookup = $Publisher -replace '[\\/:*?"<>|.,;''!&()]', '' -replace '\s+', '_'
     $existingApps = @(Get-ExistingApps -BasePath $Path -Vendor $sanitizedVendorForLookup)
 
     if (-not $AppName) {
@@ -4647,8 +4647,8 @@ function New-Action1AppRepo {
         }
     }
 
-    # Sanitize app name for folder lookup
-    $sanitizedAppForLookup = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    # Sanitize app name for folder lookup (remove punctuation, replace spaces with underscores)
+    $sanitizedAppForLookup = $AppName -replace '[\\/:*?"<>|.,;''!&()]', '' -replace '\s+', '_'
     $existingVersions = @(Get-ExistingVersions -BasePath $Path -Vendor $sanitizedVendorForLookup -AppName $sanitizedAppForLookup)
 
     if (-not $Version) {
@@ -4885,7 +4885,7 @@ Write-Host "Post-installation complete."
 
     return $repoPath
 }
-# TODO: Promot for configuration of additional actions before displaying options
+# TODO: Prompt for configuration of additional actions before displaying options
 function New-Action1AppPackage {
     <#
     .SYNOPSIS
@@ -4953,7 +4953,7 @@ function New-Action1AppPackage {
             -Required
     }
 
-    $sanitizedVendorForLookup = $Publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $sanitizedVendorForLookup = $Publisher -replace '[\\/:*?"<>|.,;''!&()]', '' -replace '\s+', '_'
     $existingApps = @(Get-ExistingApps -BasePath $BasePath -Vendor $sanitizedVendorForLookup)
 
     if (-not $AppName) {
@@ -4963,7 +4963,7 @@ function New-Action1AppPackage {
             -Required
     }
 
-    $sanitizedAppForLookup = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    $sanitizedAppForLookup = $AppName -replace '[\\/:*?"<>|.,;''!&()]', '' -replace '\s+', '_'
     $existingVersions = @(Get-ExistingVersions -BasePath $BasePath -Vendor $sanitizedVendorForLookup -AppName $sanitizedAppForLookup)
 
     if (-not $Version) {
@@ -4978,9 +4978,9 @@ function New-Action1AppPackage {
         $Description = Read-Host
     }
 
-    # Sanitize names for folder creation
-    $sanitizedPublisher = $Publisher -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
-    $sanitizedAppName = $AppName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+    # Sanitize names for folder creation (remove punctuation, replace spaces with underscores)
+    $sanitizedPublisher = $Publisher -replace '[\\/:*?"<>|.,;''!&()]', '' -replace '\s+', '_'
+    $sanitizedAppName = $AppName -replace '[\\/:*?"<>|.,;''!&()]', '' -replace '\s+', '_'
     $sanitizedVersion = $Version -replace '[\\/:*?"<>|]', '_'
 
     # Create folder structure: /vendor/app/version/
@@ -5337,7 +5337,8 @@ function New-Action1AppPackage {
         Manifest = $manifest
     }
 }
-
+# FIXME: Display name (broad) not being set correctly at all
+# FIXME: CVE not being set correctly at all
 function Deploy-Action1App {
     <#
     .SYNOPSIS
@@ -5908,7 +5909,8 @@ function Get-Action1Organization {
     }
 }
 
-# TODO: Test function
+# FIXME: Fails to retrieve endpoint groups due to json parsing error
+# Get-Action1EndpointGroup: Failed to retrieve endpoint groups: Conversion from JSON failed with error: Additional text encountered after finished reading JSON content: F. Path '', line 3, position 4.
 function Get-Action1EndpointGroup {
     <#
     .SYNOPSIS
@@ -6479,7 +6481,6 @@ function Copy-Action1Automation {
     }
 }
 
-# TODO: Test function
 function Remove-Action1AppPackage {
     <#
     .SYNOPSIS
@@ -6752,10 +6753,10 @@ function Remove-Action1AppRepo {
     }
 }
 
-# TODO: Add function Get-Action1Repo
-# TODO: Add function Get-Action1PackageVersion
 # TODO: Add function Update-Action1AppPackage
 # TODO: Add function Update-Action1AppRepo
+# TODO: Add function Export-Action1AppRepo
+# TODO: Add function Export-Action1AppPackage
 
 
 # Module initialization
