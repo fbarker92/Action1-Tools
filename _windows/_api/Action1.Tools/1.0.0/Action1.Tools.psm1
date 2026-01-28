@@ -7193,9 +7193,656 @@ function Remove-Action1AppRepo {
 
 # TODO: Add function Update-Action1AppPackage
 # TODO: Add function Update-Action1AppRepo
-# TODO: Add function Export-Action1AppRepo
-# TODO: Add function Export-Action1AppPackage
 
+function Export-Action1AppPackage {
+    <#
+    .SYNOPSIS
+        Exports an Action1 app package/version to local file structure.
+
+    .DESCRIPTION
+        The opposite of Deploy-Action1AppPackage. Fetches an app package version from
+        Action1 Software Repository and exports it to the local manifest.json format,
+        including downloading the installer files and capturing Additional Actions configuration.
+
+    .PARAMETER OrganizationId
+        Action1 organization ID. If not specified, prompts for selection.
+
+    .PARAMETER PackageId
+        The software repository package ID. If not specified, prompts for selection.
+
+    .PARAMETER VersionId
+        The specific version ID to export. If not specified, prompts for selection.
+
+    .PARAMETER OutputPath
+        The base output path where the package will be exported.
+        Creates: OutputPath/Vendor/AppName/Version/
+        Defaults to current directory.
+
+    .PARAMETER SkipInstallerDownload
+        If specified, skips downloading installer files (only exports manifest).
+
+    .PARAMETER Force
+        If specified, overwrites existing files without prompting.
+
+    .EXAMPLE
+        Export-Action1AppPackage
+        # Full interactive - prompts for org, package, version, and output path
+
+    .EXAMPLE
+        Export-Action1AppPackage -OrganizationId "org123" -PackageId "pkg456" -VersionId "ver789"
+        # Exports specific version to current directory
+
+    .EXAMPLE
+        Export-Action1AppPackage -OutputPath "C:\Packages" -SkipInstallerDownload
+        # Exports manifest only without downloading installers
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [string]$OrganizationId,
+
+        [Parameter()]
+        [string]$PackageId,
+
+        [Parameter()]
+        [string]$VersionId,
+
+        [Parameter()]
+        [string]$OutputPath = (Get-Location).Path,
+
+        [Parameter()]
+        [switch]$SkipInstallerDownload,
+
+        [Parameter()]
+        [switch]$Force
+    )
+
+    Write-Host "`n=== Export Action1 App Package ===" -ForegroundColor Cyan
+
+    try {
+        # Step 1: Select organization if not provided
+        if (-not $OrganizationId) {
+            $selectedOrg = Select-Action1Organization -IncludeAll $true
+            if (-not $selectedOrg) {
+                throw "No organization selected."
+            }
+            $OrganizationId = $selectedOrg.Id
+        }
+
+        # Step 2: Select package if not provided
+        if (-not $PackageId) {
+            Write-Host "`nFetching software repositories..." -ForegroundColor Yellow
+            $response = Invoke-Action1ApiRequest `
+                -Endpoint "software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100" `
+                -Method GET
+
+            $repos = if ($response.items) { @($response.items) } else { @($response) }
+
+            if ($repos.Count -eq 0) {
+                throw "No software repositories found."
+            }
+
+            Write-Host "`nSelect Repository:" -ForegroundColor Cyan
+            for ($i = 0; $i -lt $repos.Count; $i++) {
+                $repo = $repos[$i]
+                $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
+                Write-Host "  [$($i + 1)] $($repo.name)$platform - $($repo.vendor)"
+            }
+
+            $repoSelection = Read-Host "`nEnter selection (1-$($repos.Count))"
+            $repoNum = [int]$repoSelection
+
+            if ($repoNum -lt 1 -or $repoNum -gt $repos.Count) {
+                throw "Invalid selection."
+            }
+
+            $selectedRepo = $repos[$repoNum - 1]
+            $PackageId = $selectedRepo.id
+            Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
+        }
+        else {
+            # Fetch repo info
+            $selectedRepo = Invoke-Action1ApiRequest `
+                -Endpoint "software-repository/$OrganizationId/$PackageId" `
+                -Method GET
+        }
+
+        # Step 3: Get package details with versions
+        Write-Host "`nFetching package versions..." -ForegroundColor Yellow
+        $packageResponse = Invoke-Action1ApiRequest `
+            -Endpoint "software-repository/$OrganizationId/$PackageId`?fields=*" `
+            -Method GET
+
+        $versions = if ($packageResponse.versions) { @($packageResponse.versions) } else { @() }
+
+        if ($versions.Count -eq 0) {
+            throw "No versions found for this repository."
+        }
+
+        # Step 4: Select version if not provided
+        if (-not $VersionId) {
+            Write-Host "`nSelect Version:" -ForegroundColor Cyan
+            for ($i = 0; $i -lt $versions.Count; $i++) {
+                $ver = $versions[$i]
+                $status = if ($ver.status) { " ($($ver.status))" } else { "" }
+                $date = if ($ver.release_date) { " - $($ver.release_date)" } else { "" }
+                Write-Host "  [$($i + 1)] v$($ver.version)$status$date"
+            }
+
+            $verSelection = Read-Host "`nEnter selection (1-$($versions.Count))"
+            $verNum = [int]$verSelection
+
+            if ($verNum -lt 1 -or $verNum -gt $versions.Count) {
+                throw "Invalid selection."
+            }
+
+            $selectedVersion = $versions[$verNum - 1]
+            $VersionId = $selectedVersion.id
+        }
+        else {
+            $selectedVersion = $versions | Where-Object { $_.id -eq $VersionId } | Select-Object -First 1
+            if (-not $selectedVersion) {
+                throw "Version not found: $VersionId"
+            }
+        }
+
+        Write-Host "Selected version: v$($selectedVersion.version)" -ForegroundColor Green
+
+        # Step 5: Fetch full version details
+        Write-Host "`nFetching version details..." -ForegroundColor Yellow
+        $versionDetails = Invoke-Action1ApiRequest `
+            -Endpoint "software-repository/$OrganizationId/$PackageId/versions/$VersionId" `
+            -Method GET
+
+        # Step 6: Build output folder structure
+        $vendor = $packageResponse.vendor ?? $selectedRepo.vendor ?? "Unknown"
+        $appName = $packageResponse.name ?? $selectedRepo.name ?? "Unknown"
+        $version = $selectedVersion.version
+
+        # Sanitize for folder names (remove punctuation, replace spaces with underscores)
+        $sanitizedVendor = $vendor -replace '[\\/:*?"<>|.,;''!&()]', '' -replace '\s+', '_'
+        $sanitizedAppName = $appName -replace '[\\/:*?"<>|.,;''!&()]', '' -replace '\s+', '_'
+        $sanitizedVersion = $version -replace '[\\/:*?"<>|]', '_'
+
+        $packagePath = Join-Path $OutputPath $sanitizedVendor $sanitizedAppName $sanitizedVersion
+        $installersPath = Join-Path $packagePath "installers"
+
+        # Check if folder exists
+        if ((Test-Path $packagePath) -and -not $Force) {
+            $overwrite = Read-Host "Output folder already exists: $packagePath`nOverwrite? (y/N)"
+            if ($overwrite -ne 'y' -and $overwrite -ne 'Y') {
+                Write-Host "Export cancelled." -ForegroundColor Yellow
+                return
+            }
+        }
+
+        # Create directories
+        Write-Host "`nCreating folder structure..." -ForegroundColor Yellow
+        New-Item -Path $packagePath -ItemType Directory -Force | Out-Null
+        New-Item -Path $installersPath -ItemType Directory -Force | Out-Null
+        New-Item -Path (Join-Path $packagePath "scripts") -ItemType Directory -Force | Out-Null
+        New-Item -Path (Join-Path $packagePath "documentation") -ItemType Directory -Force | Out-Null
+
+        # Step 7: Build installers array from file_name data
+        $installers = @()
+        $fileNameData = $versionDetails.file_name
+        if ($fileNameData -is [PSCustomObject]) {
+            foreach ($platformProp in $fileNameData.PSObject.Properties) {
+                $platform = $platformProp.Name
+                $fileInfo = $platformProp.Value
+
+                # Map platform to architecture
+                $architecture = switch ($platform) {
+                    'Windows_64' { 'x64' }
+                    'Windows_32' { 'x86' }
+                    'Windows_ARM64' { 'arm64' }
+                    'Mac_AppleSilicon' { 'arm64' }
+                    'Mac_IntelCPU' { 'x64' }
+                    default { $platform }
+                }
+
+                $fileName = if ($fileInfo -is [PSCustomObject]) { $fileInfo.name } else { $fileInfo }
+
+                $installers += @{
+                    FileName = $fileName
+                    Architecture = $architecture
+                    Platform = $platform
+                }
+            }
+        }
+
+        # Step 8: Build Additional Actions from API response
+        $additionalActions = @()
+        if ($versionDetails.additional_actions) {
+            foreach ($action in $versionDetails.additional_actions) {
+                $actionObj = @{
+                    Name = $action.name
+                    Type = $action.type ?? $action.name
+                }
+
+                # Extract parameters
+                if ($action.params) {
+                    $actionObj.Params = $action.params
+                }
+
+                # Handle specific action types
+                if ($action.name -eq 'run_script' -and $action.params) {
+                    if ($action.params.script_id) {
+                        $actionObj.ScriptId = $action.params.script_id
+                    }
+                    if ($action.params.script_name) {
+                        $actionObj.ScriptName = $action.params.script_name
+                    }
+                }
+
+                $additionalActions += $actionObj
+            }
+        }
+
+        # Step 9: Build manifest object
+        $manifest = [PSCustomObject]@{
+            AppName = $appName
+            Publisher = $vendor
+            Description = $packageResponse.description ?? ""
+            Version = $version
+            CreatedDate = Get-Date -Format "yyyy-MM-dd"
+            LastModified = Get-Date -Format "yyyy-MM-dd"
+            ReleaseDate = $selectedVersion.release_date ?? (Get-Date -Format "yyyy-MM-dd")
+            InstallerType = $versionDetails.install_type ?? "msi"
+            InstallerFileName = if ($installers.Count -gt 0) { $installers[0].FileName } else { "" }
+            InstallSwitches = $versionDetails.install_parameters ?? ""
+            UninstallSwitches = $versionDetails.uninstall_parameters ?? ""
+            Installers = @(
+                $installers | ForEach-Object {
+                    [PSCustomObject]@{
+                        FileName = $_.FileName
+                        Architecture = $_.Architecture
+                    }
+                }
+            )
+            AppNameMatch = @{
+                Specific = $versionDetails.app_name_match ?? ""
+            }
+            UpdateInfo = @{
+                UpdateType = $versionDetails.update_type ?? "Regular Updates"
+                SecuritySeverity = $versionDetails.security_severity ?? "Unspecified"
+                CVEs = if ($versionDetails.cves) { @($versionDetails.cves) } else { @() }
+                Eula = $versionDetails.eula ?? ""
+            }
+            AdditionalActions = $additionalActions
+            DetectionMethod = @{
+                Type = "registry"
+                Path = ""
+                Value = ""
+            }
+            Requirements = @{
+                OSVersion = if ($versionDetails.os) { $versionDetails.os -join ", " } else { "" }
+                Architecture = if ($installers.Count -gt 0) { $installers[0].Architecture } else { "x64" }
+                MinDiskSpaceMB = 0
+                MinMemoryMB = 0
+            }
+            ExitCodes = @{
+                Success = $versionDetails.success_exit_codes ?? "0"
+                Reboot = $versionDetails.reboot_exit_codes ?? "1641,3010"
+            }
+            Action1Config = @{
+                OrganizationId = $OrganizationId
+                PackageId = $PackageId
+                VersionId = $VersionId
+            }
+            Metadata = @{
+                Tags = @()
+                Notes = $versionDetails.notes ?? ""
+                ExportedFrom = "Action1"
+                ExportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            }
+        }
+
+        # Step 10: Save manifest
+        $manifestPath = Join-Path $packagePath "manifest.json"
+        Write-ManifestFile -Manifest $manifest -Path $manifestPath
+        Write-Host "  Manifest saved: $manifestPath" -ForegroundColor Green
+
+        # Step 11: Download installer files (if not skipped)
+        $downloadedFiles = @()
+        if (-not $SkipInstallerDownload -and $installers.Count -gt 0) {
+            Write-Host "`nDownloading installer files..." -ForegroundColor Yellow
+
+            # Get binary IDs for download
+            $binaryIds = $versionDetails.binary_id
+            if ($binaryIds -is [PSCustomObject]) {
+                $token = Get-Action1AccessToken
+
+                foreach ($installer in $installers) {
+                    $platform = $installer.Platform
+                    $binaryId = $binaryIds.$platform
+
+                    if ($binaryId) {
+                        $outputFile = Join-Path $installersPath $installer.FileName
+                        Write-Host "  Downloading: $($installer.FileName) ($platform)..." -ForegroundColor Cyan
+
+                        try {
+                            # Try multiple download endpoint patterns
+                            $downloadEndpoints = @(
+                                # Pattern 1: binaries endpoint with org and binary_id
+                                "$script:Action1BaseUri/software-repository/$OrganizationId/binaries/$binaryId"
+                                # Pattern 2: direct binaries endpoint
+                                "$script:Action1BaseUri/binaries/$binaryId"
+                                # Pattern 3: version-specific download with binary_id
+                                "$script:Action1BaseUri/software-repository/$OrganizationId/$PackageId/versions/$VersionId/binaries/$binaryId"
+                            )
+
+                            $headers = @{
+                                'Authorization' = "Bearer $token"
+                                'Accept' = '*/*'
+                            }
+
+                            $downloaded = $false
+                            $ProgressPreference = 'SilentlyContinue'
+
+                            foreach ($downloadUri in $downloadEndpoints) {
+                                if ($downloaded) { break }
+
+                                Write-Action1Log "Trying download URL: $downloadUri" -Level DEBUG
+
+                                try {
+                                    $response = Invoke-WebRequest -Uri $downloadUri -Headers $headers -OutFile $outputFile -UseBasicParsing -PassThru -MaximumRedirection 5
+
+                                    if (Test-Path $outputFile) {
+                                        $fileSize = (Get-Item $outputFile).Length
+                                        if ($fileSize -gt 0) {
+                                            Write-Host "    Downloaded: $(ConvertTo-FileSize -Bytes $fileSize)" -ForegroundColor Green
+                                            $downloadedFiles += $installer.FileName
+                                            $downloaded = $true
+                                        }
+                                        else {
+                                            Remove-Item $outputFile -Force -ErrorAction SilentlyContinue
+                                        }
+                                    }
+                                }
+                                catch {
+                                    Write-Action1Log "Download attempt failed: $($_.Exception.Message)" -Level DEBUG
+                                    Remove-Item $outputFile -Force -ErrorAction SilentlyContinue
+                                    # Continue to try next endpoint
+                                }
+                            }
+
+                            $ProgressPreference = 'Continue'
+
+                            if (-not $downloaded) {
+                                Write-Host "    Download not available (no accessible endpoint found)" -ForegroundColor Yellow
+                                Write-Action1Log "All download endpoints failed for $platform (binary_id: $binaryId)" -Level WARN
+                            }
+                        }
+                        catch {
+                            Write-Host "    Failed to download: $($_.Exception.Message)" -ForegroundColor Red
+                            Write-Action1Log "Failed to download installer for $platform" -Level WARN -ErrorRecord $_
+                        }
+                    }
+                    else {
+                        Write-Host "  No binary ID for platform: $platform" -ForegroundColor Yellow
+                    }
+                }
+            }
+            else {
+                Write-Host "  No binary information available for download" -ForegroundColor Yellow
+            }
+        }
+        elseif ($SkipInstallerDownload) {
+            Write-Host "`nSkipping installer download (manifest only)" -ForegroundColor Yellow
+        }
+
+        # Summary
+        Write-Host "`n=== Export Complete ===" -ForegroundColor Green
+        Write-Host "Application: $appName v$version" -ForegroundColor White
+        Write-Host "Publisher: $vendor" -ForegroundColor White
+        Write-Host "Location: $packagePath" -ForegroundColor Cyan
+        Write-Host "Manifest: $manifestPath" -ForegroundColor Cyan
+        if ($downloadedFiles.Count -gt 0) {
+            Write-Host "Installers: $($downloadedFiles.Count) file(s) downloaded" -ForegroundColor Green
+        }
+        if ($additionalActions.Count -gt 0) {
+            Write-Host "Additional Actions: $($additionalActions.Count) configured" -ForegroundColor Green
+        }
+
+        return @{
+            Success = $true
+            OutputPath = $packagePath
+            ManifestPath = $manifestPath
+            AppName = $appName
+            Version = $version
+            Publisher = $vendor
+            DownloadedFiles = $downloadedFiles
+            AdditionalActions = $additionalActions.Count
+        }
+    }
+    catch {
+        Write-Error "Export failed: $($_.Exception.Message)"
+        Write-Action1Log "Export failed" -Level ERROR -ErrorRecord $_
+        return @{
+            Success = $false
+            Error = $_.Exception.Message
+        }
+    }
+}
+
+function Export-Action1AppRepo {
+    <#
+    .SYNOPSIS
+        Exports an entire Action1 app repository to local file structure.
+
+    .DESCRIPTION
+        The opposite of Deploy-Action1AppRepo. Fetches an entire app repository from
+        Action1 Software Repository including all versions, and exports them to the
+        local manifest.json format with installer files and Additional Actions.
+
+    .PARAMETER OrganizationId
+        Action1 organization ID. If not specified, prompts for selection.
+
+    .PARAMETER PackageId
+        The software repository package ID. If not specified, prompts for selection.
+
+    .PARAMETER OutputPath
+        The base output path where the package will be exported.
+        Creates: OutputPath/Vendor/AppName/Version/ for each version.
+        Defaults to current directory.
+
+    .PARAMETER VersionFilter
+        Optional filter to export only specific versions. Supports wildcards.
+        Example: "1.*" to export only 1.x versions.
+
+    .PARAMETER SkipInstallerDownload
+        If specified, skips downloading installer files (only exports manifests).
+
+    .PARAMETER Force
+        If specified, overwrites existing files without prompting.
+
+    .EXAMPLE
+        Export-Action1AppRepo
+        # Full interactive - prompts for org, package, and output path
+
+    .EXAMPLE
+        Export-Action1AppRepo -OrganizationId "org123" -PackageId "pkg456" -OutputPath "C:\Packages"
+        # Exports all versions of specified package
+
+    .EXAMPLE
+        Export-Action1AppRepo -VersionFilter "23.*" -SkipInstallerDownload
+        # Exports only version 23.x manifests without downloading installers
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [string]$OrganizationId,
+
+        [Parameter()]
+        [string]$PackageId,
+
+        [Parameter()]
+        [string]$OutputPath = (Get-Location).Path,
+
+        [Parameter()]
+        [string]$VersionFilter,
+
+        [Parameter()]
+        [switch]$SkipInstallerDownload,
+
+        [Parameter()]
+        [switch]$Force
+    )
+
+    Write-Host "`n=== Export Action1 App Repository ===" -ForegroundColor Cyan
+
+    try {
+        # Step 1: Select organization if not provided
+        if (-not $OrganizationId) {
+            $selectedOrg = Select-Action1Organization -IncludeAll $true
+            if (-not $selectedOrg) {
+                throw "No organization selected."
+            }
+            $OrganizationId = $selectedOrg.Id
+        }
+
+        # Step 2: Select package if not provided
+        if (-not $PackageId) {
+            Write-Host "`nFetching software repositories..." -ForegroundColor Yellow
+            $response = Invoke-Action1ApiRequest `
+                -Endpoint "software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100" `
+                -Method GET
+
+            $repos = if ($response.items) { @($response.items) } else { @($response) }
+
+            if ($repos.Count -eq 0) {
+                throw "No software repositories found."
+            }
+
+            Write-Host "`nSelect Repository to Export:" -ForegroundColor Cyan
+            for ($i = 0; $i -lt $repos.Count; $i++) {
+                $repo = $repos[$i]
+                $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
+                Write-Host "  [$($i + 1)] $($repo.name)$platform - $($repo.vendor)"
+            }
+
+            $repoSelection = Read-Host "`nEnter selection (1-$($repos.Count))"
+            $repoNum = [int]$repoSelection
+
+            if ($repoNum -lt 1 -or $repoNum -gt $repos.Count) {
+                throw "Invalid selection."
+            }
+
+            $selectedRepo = $repos[$repoNum - 1]
+            $PackageId = $selectedRepo.id
+            Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
+        }
+        else {
+            # Fetch repo info
+            $selectedRepo = Invoke-Action1ApiRequest `
+                -Endpoint "software-repository/$OrganizationId/$PackageId" `
+                -Method GET
+        }
+
+        # Step 3: Get package details with all versions
+        Write-Host "`nFetching package versions..." -ForegroundColor Yellow
+        $packageResponse = Invoke-Action1ApiRequest `
+            -Endpoint "software-repository/$OrganizationId/$PackageId`?fields=*" `
+            -Method GET
+
+        $versions = if ($packageResponse.versions) { @($packageResponse.versions) } else { @() }
+
+        if ($versions.Count -eq 0) {
+            throw "No versions found for this repository."
+        }
+
+        # Apply version filter if specified
+        if ($VersionFilter) {
+            $versions = $versions | Where-Object { $_.version -like $VersionFilter }
+            Write-Host "Filtered to $($versions.Count) version(s) matching '$VersionFilter'" -ForegroundColor Yellow
+        }
+
+        if ($versions.Count -eq 0) {
+            throw "No versions match the specified filter."
+        }
+
+        $vendor = $packageResponse.vendor ?? $selectedRepo.vendor ?? "Unknown"
+        $appName = $packageResponse.name ?? $selectedRepo.name ?? "Unknown"
+
+        Write-Host "`nExporting $($versions.Count) version(s) of $appName by $vendor" -ForegroundColor Cyan
+
+        # Export each version
+        $results = @()
+        $successCount = 0
+        $failCount = 0
+
+        foreach ($ver in $versions) {
+            Write-Host "`n--- Exporting v$($ver.version) ---" -ForegroundColor Yellow
+
+            try {
+                $exportResult = Export-Action1AppPackage `
+                    -OrganizationId $OrganizationId `
+                    -PackageId $PackageId `
+                    -VersionId $ver.id `
+                    -OutputPath $OutputPath `
+                    -SkipInstallerDownload:$SkipInstallerDownload `
+                    -Force:$Force
+
+                if ($exportResult.Success) {
+                    $successCount++
+                    $results += @{
+                        Version = $ver.version
+                        Success = $true
+                        OutputPath = $exportResult.OutputPath
+                    }
+                }
+                else {
+                    $failCount++
+                    $results += @{
+                        Version = $ver.version
+                        Success = $false
+                        Error = $exportResult.Error
+                    }
+                }
+            }
+            catch {
+                $failCount++
+                $results += @{
+                    Version = $ver.version
+                    Success = $false
+                    Error = $_.Exception.Message
+                }
+                Write-Error "Failed to export v$($ver.version): $($_.Exception.Message)"
+            }
+        }
+
+        # Summary
+        Write-Host "`n=== Export Summary ===" -ForegroundColor Cyan
+        Write-Host "Application: $appName" -ForegroundColor Green
+        Write-Host "Publisher: $vendor" -ForegroundColor Green
+        Write-Host "Total Versions: $($versions.Count)"
+        Write-Host "Successful: $successCount" -ForegroundColor Green
+        if ($failCount -gt 0) {
+            Write-Host "Failed: $failCount" -ForegroundColor Red
+        }
+
+        return @{
+            Success = ($failCount -eq 0)
+            AppName = $appName
+            Publisher = $vendor
+            OrganizationId = $OrganizationId
+            PackageId = $PackageId
+            TotalVersions = $versions.Count
+            SuccessCount = $successCount
+            FailCount = $failCount
+            Results = $results
+        }
+    }
+    catch {
+        Write-Error "Repository export failed: $($_.Exception.Message)"
+        Write-Action1Log "Repository export failed" -Level ERROR -ErrorRecord $_
+        return @{
+            Success = $false
+            Error = $_.Exception.Message
+        }
+    }
+}
 
 # Module initialization
 Write-Verbose "Action1.Tools module loaded"
@@ -7282,6 +7929,8 @@ Export-ModuleMember -Function @(
     'Deploy-Action1AppPackage',
     'Deploy-Action1AppRepo',
     'Deploy-Action1AppUpdate',
+    'Export-Action1AppPackage',
+    'Export-Action1AppRepo',
     'New-Action1AppRepo',
     'New-Action1AppPackage',
     'Get-Action1AppPackage',
