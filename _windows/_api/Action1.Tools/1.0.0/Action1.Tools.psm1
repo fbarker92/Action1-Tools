@@ -7415,23 +7415,26 @@ function Export-Action1AppPackage {
         $additionalActions = @()
         if ($versionDetails.additional_actions) {
             foreach ($action in $versionDetails.additional_actions) {
-                $actionObj = @{
+                # Extract display name from params.display_summary (for readability, not used on import)
+                $displayName = ""
+                if ($action.params -and $action.params.display_summary) {
+                    $displayName = $action.params.display_summary
+                }
+
+                $actionObj = [ordered]@{
+                    _DisplayName = $displayName
                     Name = $action.name
-                    Type = $action.type ?? $action.name
+                    TemplateId = $action.template_id ?? $action.name
+                    When = $action.when ?? ""
+                    Priority = $action.priority ?? "1"
+                    Id = $action.id ?? ""
                 }
 
-                # Extract parameters
+                # Extract all parameters
                 if ($action.params) {
-                    $actionObj.Params = $action.params
-                }
-
-                # Handle specific action types
-                if ($action.name -eq 'run_script' -and $action.params) {
-                    if ($action.params.script_id) {
-                        $actionObj.ScriptId = $action.params.script_id
-                    }
-                    if ($action.params.script_name) {
-                        $actionObj.ScriptName = $action.params.script_name
+                    $actionObj.Params = @{}
+                    foreach ($prop in $action.params.PSObject.Properties) {
+                        $actionObj.Params[$prop.Name] = $prop.Value
                     }
                 }
 
@@ -7489,6 +7492,9 @@ function Export-Action1AppPackage {
                 OrganizationId = $OrganizationId
                 PackageId = $PackageId
                 VersionId = $VersionId
+                Status = $versionDetails.status ?? "Published"
+                ApprovalStatus = $versionDetails.approval_status ?? "Approved"
+                EulaAccepted = $versionDetails.EULA_accepted ?? "no"
             }
             Metadata = @{
                 Tags = @()
@@ -7503,93 +7509,22 @@ function Export-Action1AppPackage {
         Write-ManifestFile -Manifest $manifest -Path $manifestPath
         Write-Host "  Manifest saved: $manifestPath" -ForegroundColor Green
 
-        # Step 11: Download installer files (if not skipped)
-        $downloadedFiles = @()
-        if (-not $SkipInstallerDownload -and $installers.Count -gt 0) {
-            Write-Host "`nDownloading installer files..." -ForegroundColor Yellow
+        # Step 11: Installer file information
+        # Note: Action1 API does not support direct installer downloads.
+        # Installers are downloaded by agents via a separate messaging protocol.
+        if ($installers.Count -gt 0) {
+            Write-Host "`nInstaller Files (referenced in manifest):" -ForegroundColor Yellow
 
-            # Get binary IDs for download
             $binaryIds = $versionDetails.binary_id
-            if ($binaryIds -is [PSCustomObject]) {
-                $token = Get-Action1AccessToken
+            foreach ($installer in $installers) {
+                $platform = $installer.Platform
+                $binaryId = if ($binaryIds -is [PSCustomObject]) { $binaryIds.$platform } else { $null }
 
-                foreach ($installer in $installers) {
-                    $platform = $installer.Platform
-                    $binaryId = $binaryIds.$platform
-
-                    if ($binaryId) {
-                        $outputFile = Join-Path $installersPath $installer.FileName
-                        Write-Host "  Downloading: $($installer.FileName) ($platform)..." -ForegroundColor Cyan
-
-                        try {
-                            # Try multiple download endpoint patterns
-                            $downloadEndpoints = @(
-                                # Pattern 1: binaries endpoint with org and binary_id
-                                "$script:Action1BaseUri/software-repository/$OrganizationId/binaries/$binaryId"
-                                # Pattern 2: direct binaries endpoint
-                                "$script:Action1BaseUri/binaries/$binaryId"
-                                # Pattern 3: version-specific download with binary_id
-                                "$script:Action1BaseUri/software-repository/$OrganizationId/$PackageId/versions/$VersionId/binaries/$binaryId"
-                            )
-
-                            $headers = @{
-                                'Authorization' = "Bearer $token"
-                                'Accept' = '*/*'
-                            }
-
-                            $downloaded = $false
-                            $ProgressPreference = 'SilentlyContinue'
-
-                            foreach ($downloadUri in $downloadEndpoints) {
-                                if ($downloaded) { break }
-
-                                Write-Action1Log "Trying download URL: $downloadUri" -Level DEBUG
-
-                                try {
-                                    $response = Invoke-WebRequest -Uri $downloadUri -Headers $headers -OutFile $outputFile -UseBasicParsing -PassThru -MaximumRedirection 5
-
-                                    if (Test-Path $outputFile) {
-                                        $fileSize = (Get-Item $outputFile).Length
-                                        if ($fileSize -gt 0) {
-                                            Write-Host "    Downloaded: $(ConvertTo-FileSize -Bytes $fileSize)" -ForegroundColor Green
-                                            $downloadedFiles += $installer.FileName
-                                            $downloaded = $true
-                                        }
-                                        else {
-                                            Remove-Item $outputFile -Force -ErrorAction SilentlyContinue
-                                        }
-                                    }
-                                }
-                                catch {
-                                    Write-Action1Log "Download attempt failed: $($_.Exception.Message)" -Level DEBUG
-                                    Remove-Item $outputFile -Force -ErrorAction SilentlyContinue
-                                    # Continue to try next endpoint
-                                }
-                            }
-
-                            $ProgressPreference = 'Continue'
-
-                            if (-not $downloaded) {
-                                Write-Host "    Download not available (no accessible endpoint found)" -ForegroundColor Yellow
-                                Write-Action1Log "All download endpoints failed for $platform (binary_id: $binaryId)" -Level WARN
-                            }
-                        }
-                        catch {
-                            Write-Host "    Failed to download: $($_.Exception.Message)" -ForegroundColor Red
-                            Write-Action1Log "Failed to download installer for $platform" -Level WARN -ErrorRecord $_
-                        }
-                    }
-                    else {
-                        Write-Host "  No binary ID for platform: $platform" -ForegroundColor Yellow
-                    }
+                Write-Host "  - $($installer.FileName) [$($installer.Architecture)]" -ForegroundColor Cyan
+                if ($binaryId) {
+                    Write-Host "    Agent cache: C:\Windows\Action1\package_downloads\CLOUD_$($binaryId)_files\" -ForegroundColor DarkGray
                 }
             }
-            else {
-                Write-Host "  No binary information available for download" -ForegroundColor Yellow
-            }
-        }
-        elseif ($SkipInstallerDownload) {
-            Write-Host "`nSkipping installer download (manifest only)" -ForegroundColor Yellow
         }
 
         # Summary
@@ -7598,9 +7533,7 @@ function Export-Action1AppPackage {
         Write-Host "Publisher: $vendor" -ForegroundColor White
         Write-Host "Location: $packagePath" -ForegroundColor Cyan
         Write-Host "Manifest: $manifestPath" -ForegroundColor Cyan
-        if ($downloadedFiles.Count -gt 0) {
-            Write-Host "Installers: $($downloadedFiles.Count) file(s) downloaded" -ForegroundColor Green
-        }
+        Write-Host "Installers: $($installers.Count) referenced" -ForegroundColor White
         if ($additionalActions.Count -gt 0) {
             Write-Host "Additional Actions: $($additionalActions.Count) configured" -ForegroundColor Green
         }
@@ -7612,8 +7545,8 @@ function Export-Action1AppPackage {
             AppName = $appName
             Version = $version
             Publisher = $vendor
-            DownloadedFiles = $downloadedFiles
-            AdditionalActions = $additionalActions.Count
+            InstallerCount = $installers.Count
+            AdditionalActionsCount = $additionalActions.Count
         }
     }
     catch {
