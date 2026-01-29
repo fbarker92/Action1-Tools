@@ -7224,6 +7224,10 @@ function Export-Action1AppPackage {
     .PARAMETER Force
         If specified, overwrites existing files without prompting.
 
+    .PARAMETER PageSize
+        Number of items to display per page when browsing built-in packages.
+        Defaults to 10.
+
     .EXAMPLE
         Export-Action1AppPackage
         # Full interactive - prompts for org, package, version, and output path
@@ -7254,7 +7258,10 @@ function Export-Action1AppPackage {
         [switch]$SkipInstallerDownload,
 
         [Parameter()]
-        [switch]$Force
+        [switch]$Force,
+
+        [Parameter()]
+        [int]$PageSize = 10
     )
 
     Write-Host "`n=== Export Action1 App Package ===" -ForegroundColor Cyan
@@ -7271,34 +7278,125 @@ function Export-Action1AppPackage {
 
         # Step 2: Select package if not provided
         if (-not $PackageId) {
+            # Ask user to choose between custom and built-in packages
+            Write-Host "`nSelect Package Type:" -ForegroundColor Cyan
+            Write-Host "  [1] Custom (your uploaded packages)"
+            Write-Host "  [2] Built-in (Action1 library)"
+
+            $typeSelection = Read-Host "`nEnter selection (1-2)"
+
+            $isBuiltIn = $typeSelection -eq '2'
+
             Write-Host "`nFetching software repositories..." -ForegroundColor Yellow
-            $response = Invoke-Action1ApiRequest `
-                -Endpoint "software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100" `
-                -Method GET
 
-            $repos = if ($response.items) { @($response.items) } else { @($response) }
+            if ($isBuiltIn) {
+                # Fetch all built-in packages once (API doesn't support offset pagination)
+                $response = Invoke-Action1ApiRequest `
+                    -Endpoint "software-repository/$OrganizationId`?custom=no&builtin=yes&limit=1000" `
+                    -Method GET
 
-            if ($repos.Count -eq 0) {
-                throw "No software repositories found."
+                $allRepos = if ($response.items) { @($response.items) } else { @($response) }
+
+                if ($allRepos.Count -eq 0) {
+                    throw "No built-in software repositories found."
+                }
+
+                # Local pagination through fetched results
+                $totalCount = $allRepos.Count
+                $totalPages = [Math]::Ceiling($totalCount / $PageSize)
+                $currentPage = 0
+                $selectedRepo = $null
+
+                while ($null -eq $selectedRepo) {
+                    $startIndex = $currentPage * $PageSize
+                    $endIndex = [Math]::Min($startIndex + $PageSize, $totalCount)
+                    $pageRepos = $allRepos[$startIndex..($endIndex - 1)]
+
+                    Write-Host "`nBuilt-in Repositories (Page $($currentPage + 1) of $totalPages, Total: $totalCount):" -ForegroundColor Cyan
+                    for ($i = 0; $i -lt $pageRepos.Count; $i++) {
+                        $repo = $pageRepos[$i]
+                        $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
+                        Write-Host "  [$($i + 1)] $($repo.name)$platform - $($repo.vendor)"
+                    }
+
+                    # Navigation options
+                    Write-Host ""
+                    if ($currentPage -gt 0) {
+                        Write-Host "  [P] Previous page" -ForegroundColor DarkGray
+                    }
+                    if ($currentPage -lt $totalPages - 1) {
+                        Write-Host "  [N] Next page" -ForegroundColor DarkGray
+                    }
+                    Write-Host "  [Q] Cancel" -ForegroundColor DarkGray
+
+                    $repoSelection = Read-Host "`nEnter selection (1-$($pageRepos.Count), P/N to navigate, Q to cancel)"
+
+                    if ($repoSelection -eq 'Q' -or $repoSelection -eq 'q') {
+                        throw "Selection cancelled."
+                    }
+                    elseif ($repoSelection -eq 'P' -or $repoSelection -eq 'p') {
+                        if ($currentPage -gt 0) {
+                            $currentPage--
+                        }
+                        else {
+                            Write-Host "Already on first page." -ForegroundColor Yellow
+                        }
+                    }
+                    elseif ($repoSelection -eq 'N' -or $repoSelection -eq 'n') {
+                        if ($currentPage -lt $totalPages - 1) {
+                            $currentPage++
+                        }
+                        else {
+                            Write-Host "No more pages." -ForegroundColor Yellow
+                        }
+                    }
+                    elseif ($repoSelection -match '^\d+$') {
+                        $repoNum = [int]$repoSelection
+                        if ($repoNum -ge 1 -and $repoNum -le $pageRepos.Count) {
+                            $selectedRepo = $pageRepos[$repoNum - 1]
+                        }
+                        else {
+                            Write-Host "Invalid selection. Please try again." -ForegroundColor Yellow
+                        }
+                    }
+                    else {
+                        Write-Host "Invalid input. Please try again." -ForegroundColor Yellow
+                    }
+                }
+
+                $PackageId = $selectedRepo.id
+                Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
             }
+            else {
+                # Custom packages - show all (no pagination needed, typically fewer)
+                $response = Invoke-Action1ApiRequest `
+                    -Endpoint "software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100" `
+                    -Method GET
 
-            Write-Host "`nSelect Repository:" -ForegroundColor Cyan
-            for ($i = 0; $i -lt $repos.Count; $i++) {
-                $repo = $repos[$i]
-                $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
-                Write-Host "  [$($i + 1)] $($repo.name)$platform - $($repo.vendor)"
+                $repos = if ($response.items) { @($response.items) } else { @($response) }
+
+                if ($repos.Count -eq 0) {
+                    throw "No custom software repositories found."
+                }
+
+                Write-Host "`nCustom Repositories:" -ForegroundColor Cyan
+                for ($i = 0; $i -lt $repos.Count; $i++) {
+                    $repo = $repos[$i]
+                    $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
+                    Write-Host "  [$($i + 1)] $($repo.name)$platform - $($repo.vendor)"
+                }
+
+                $repoSelection = Read-Host "`nEnter selection (1-$($repos.Count))"
+                $repoNum = [int]$repoSelection
+
+                if ($repoNum -lt 1 -or $repoNum -gt $repos.Count) {
+                    throw "Invalid selection."
+                }
+
+                $selectedRepo = $repos[$repoNum - 1]
+                $PackageId = $selectedRepo.id
+                Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
             }
-
-            $repoSelection = Read-Host "`nEnter selection (1-$($repos.Count))"
-            $repoNum = [int]$repoSelection
-
-            if ($repoNum -lt 1 -or $repoNum -gt $repos.Count) {
-                throw "Invalid selection."
-            }
-
-            $selectedRepo = $repos[$repoNum - 1]
-            $PackageId = $selectedRepo.id
-            Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
         }
         else {
             # Fetch repo info
@@ -7509,7 +7607,61 @@ function Export-Action1AppPackage {
         Write-ManifestFile -Manifest $manifest -Path $manifestPath
         Write-Host "  Manifest saved: $manifestPath" -ForegroundColor Green
 
-        # Step 11: Installer file information
+        # Step 11: Extract scripts from Additional Actions
+        $extractedScripts = @()
+        if ($additionalActions.Count -gt 0) {
+            $scriptsPath = Join-Path $packagePath "scripts"
+            $hasScripts = $false
+
+            foreach ($action in $additionalActions) {
+                # Check if this is a run_script action with script content
+                if ($action.TemplateId -eq "run_script" -and $action.Params -and $action.Params.run_script_text) {
+                    $scriptText = $action.Params.run_script_text
+
+                    # Skip empty scripts
+                    if ([string]::IsNullOrWhiteSpace($scriptText)) {
+                        continue
+                    }
+
+                    # Map "When" to install/uninstall
+                    $whenPrefix = switch -Regex ($action.When) {
+                        "install" { "install" }
+                        "uninstall" { "uninstall" }
+                        default { "other" }
+                    }
+
+                    # Get priority (default to 1)
+                    $priority = if ($action.Priority) { $action.Priority } else { "1" }
+
+                    # Sanitize name for filename
+                    $scriptName = $action.Name -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+                    $scriptName = $scriptName -replace '_+', '_' -replace '^_|_$', ''
+
+                    # Build filename: <install/uninstall>_<priority>_<name>.ps1
+                    $scriptFileName = "${whenPrefix}_${priority}_${scriptName}.ps1"
+                    $scriptFilePath = Join-Path $scriptsPath $scriptFileName
+
+                    # Create scripts folder if needed
+                    if (-not $hasScripts) {
+                        if (-not (Test-Path $scriptsPath)) {
+                            $null = New-Item -ItemType Directory -Path $scriptsPath -Force
+                        }
+                        $hasScripts = $true
+                    }
+
+                    # Save script file
+                    $scriptText | Out-File -FilePath $scriptFilePath -Encoding UTF8 -Force
+                    $extractedScripts += $scriptFileName
+                    Write-Host "  Script extracted: $scriptFileName" -ForegroundColor Cyan
+                }
+            }
+
+            if ($extractedScripts.Count -gt 0) {
+                Write-Host "  Scripts folder: $scriptsPath" -ForegroundColor Green
+            }
+        }
+
+        # Step 12: Installer file information
         # Note: Action1 API does not support direct installer downloads.
         # Installers are downloaded by agents via a separate messaging protocol.
         if ($installers.Count -gt 0) {
@@ -7535,7 +7687,10 @@ function Export-Action1AppPackage {
         Write-Host "Manifest: $manifestPath" -ForegroundColor Cyan
         Write-Host "Installers: $($installers.Count) referenced" -ForegroundColor White
         if ($additionalActions.Count -gt 0) {
-            Write-Host "Additional Actions: $($additionalActions.Count) configured" -ForegroundColor Green
+            Write-Host "Additional Actions: $($additionalActions.Count) configured" -ForegroundColor White
+        }
+        if ($extractedScripts.Count -gt 0) {
+            Write-Host "Scripts extracted: $($extractedScripts.Count)" -ForegroundColor Green
         }
 
         return @{
@@ -7547,6 +7702,8 @@ function Export-Action1AppPackage {
             Publisher = $vendor
             InstallerCount = $installers.Count
             AdditionalActionsCount = $additionalActions.Count
+            ExtractedScriptsCount = $extractedScripts.Count
+            ExtractedScripts = $extractedScripts
         }
     }
     catch {
@@ -7590,6 +7747,10 @@ function Export-Action1AppRepo {
     .PARAMETER Force
         If specified, overwrites existing files without prompting.
 
+    .PARAMETER PageSize
+        Number of items to display per page when browsing built-in packages.
+        Defaults to 10.
+
     .EXAMPLE
         Export-Action1AppRepo
         # Full interactive - prompts for org, package, and output path
@@ -7620,7 +7781,10 @@ function Export-Action1AppRepo {
         [switch]$SkipInstallerDownload,
 
         [Parameter()]
-        [switch]$Force
+        [switch]$Force,
+
+        [Parameter()]
+        [int]$PageSize = 10
     )
 
     Write-Host "`n=== Export Action1 App Repository ===" -ForegroundColor Cyan
@@ -7637,34 +7801,125 @@ function Export-Action1AppRepo {
 
         # Step 2: Select package if not provided
         if (-not $PackageId) {
+            # Ask user to choose between custom and built-in packages
+            Write-Host "`nSelect Package Type:" -ForegroundColor Cyan
+            Write-Host "  [1] Custom (your uploaded packages)"
+            Write-Host "  [2] Built-in (Action1 library)"
+
+            $typeSelection = Read-Host "`nEnter selection (1-2)"
+
+            $isBuiltIn = $typeSelection -eq '2'
+
             Write-Host "`nFetching software repositories..." -ForegroundColor Yellow
-            $response = Invoke-Action1ApiRequest `
-                -Endpoint "software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100" `
-                -Method GET
 
-            $repos = if ($response.items) { @($response.items) } else { @($response) }
+            if ($isBuiltIn) {
+                # Fetch all built-in packages once (API doesn't support offset pagination)
+                $response = Invoke-Action1ApiRequest `
+                    -Endpoint "software-repository/$OrganizationId`?custom=no&builtin=yes&limit=1000" `
+                    -Method GET
 
-            if ($repos.Count -eq 0) {
-                throw "No software repositories found."
+                $allRepos = if ($response.items) { @($response.items) } else { @($response) }
+
+                if ($allRepos.Count -eq 0) {
+                    throw "No built-in software repositories found."
+                }
+
+                # Local pagination through fetched results
+                $totalCount = $allRepos.Count
+                $totalPages = [Math]::Ceiling($totalCount / $PageSize)
+                $currentPage = 0
+                $selectedRepo = $null
+
+                while ($null -eq $selectedRepo) {
+                    $startIndex = $currentPage * $PageSize
+                    $endIndex = [Math]::Min($startIndex + $PageSize, $totalCount)
+                    $pageRepos = $allRepos[$startIndex..($endIndex - 1)]
+
+                    Write-Host "`nBuilt-in Repositories (Page $($currentPage + 1) of $totalPages, Total: $totalCount):" -ForegroundColor Cyan
+                    for ($i = 0; $i -lt $pageRepos.Count; $i++) {
+                        $repo = $pageRepos[$i]
+                        $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
+                        Write-Host "  [$($i + 1)] $($repo.name)$platform - $($repo.vendor)"
+                    }
+
+                    # Navigation options
+                    Write-Host ""
+                    if ($currentPage -gt 0) {
+                        Write-Host "  [P] Previous page" -ForegroundColor DarkGray
+                    }
+                    if ($currentPage -lt $totalPages - 1) {
+                        Write-Host "  [N] Next page" -ForegroundColor DarkGray
+                    }
+                    Write-Host "  [Q] Cancel" -ForegroundColor DarkGray
+
+                    $repoSelection = Read-Host "`nEnter selection (1-$($pageRepos.Count), P/N to navigate, Q to cancel)"
+
+                    if ($repoSelection -eq 'Q' -or $repoSelection -eq 'q') {
+                        throw "Selection cancelled."
+                    }
+                    elseif ($repoSelection -eq 'P' -or $repoSelection -eq 'p') {
+                        if ($currentPage -gt 0) {
+                            $currentPage--
+                        }
+                        else {
+                            Write-Host "Already on first page." -ForegroundColor Yellow
+                        }
+                    }
+                    elseif ($repoSelection -eq 'N' -or $repoSelection -eq 'n') {
+                        if ($currentPage -lt $totalPages - 1) {
+                            $currentPage++
+                        }
+                        else {
+                            Write-Host "No more pages." -ForegroundColor Yellow
+                        }
+                    }
+                    elseif ($repoSelection -match '^\d+$') {
+                        $repoNum = [int]$repoSelection
+                        if ($repoNum -ge 1 -and $repoNum -le $pageRepos.Count) {
+                            $selectedRepo = $pageRepos[$repoNum - 1]
+                        }
+                        else {
+                            Write-Host "Invalid selection. Please try again." -ForegroundColor Yellow
+                        }
+                    }
+                    else {
+                        Write-Host "Invalid input. Please try again." -ForegroundColor Yellow
+                    }
+                }
+
+                $PackageId = $selectedRepo.id
+                Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
             }
+            else {
+                # Custom packages - show all (no pagination needed, typically fewer)
+                $response = Invoke-Action1ApiRequest `
+                    -Endpoint "software-repository/$OrganizationId`?custom=yes&builtin=no&limit=100" `
+                    -Method GET
 
-            Write-Host "`nSelect Repository to Export:" -ForegroundColor Cyan
-            for ($i = 0; $i -lt $repos.Count; $i++) {
-                $repo = $repos[$i]
-                $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
-                Write-Host "  [$($i + 1)] $($repo.name)$platform - $($repo.vendor)"
+                $repos = if ($response.items) { @($response.items) } else { @($response) }
+
+                if ($repos.Count -eq 0) {
+                    throw "No custom software repositories found."
+                }
+
+                Write-Host "`nCustom Repositories:" -ForegroundColor Cyan
+                for ($i = 0; $i -lt $repos.Count; $i++) {
+                    $repo = $repos[$i]
+                    $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
+                    Write-Host "  [$($i + 1)] $($repo.name)$platform - $($repo.vendor)"
+                }
+
+                $repoSelection = Read-Host "`nEnter selection (1-$($repos.Count))"
+                $repoNum = [int]$repoSelection
+
+                if ($repoNum -lt 1 -or $repoNum -gt $repos.Count) {
+                    throw "Invalid selection."
+                }
+
+                $selectedRepo = $repos[$repoNum - 1]
+                $PackageId = $selectedRepo.id
+                Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
             }
-
-            $repoSelection = Read-Host "`nEnter selection (1-$($repos.Count))"
-            $repoNum = [int]$repoSelection
-
-            if ($repoNum -lt 1 -or $repoNum -gt $repos.Count) {
-                throw "Invalid selection."
-            }
-
-            $selectedRepo = $repos[$repoNum - 1]
-            $PackageId = $selectedRepo.id
-            Write-Host "Selected: $($selectedRepo.name)" -ForegroundColor Green
         }
         else {
             # Fetch repo info
