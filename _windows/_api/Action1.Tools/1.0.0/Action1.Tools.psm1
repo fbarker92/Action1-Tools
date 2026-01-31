@@ -3284,16 +3284,23 @@ function Invoke-Action1ApiRequest {
 
             # Try to read error response body
             try {
-                $reader = [System.IO.StreamReader]::new($errorResponse.GetResponseStream())
-                $errorBody = $reader.ReadToEnd()
-                $reader.Close()
-                Write-Action1Log "Error Response Body:" -Level TRACE
-                Write-Action1Log $errorBody -Level TRACE
+                # HttpResponseMessage uses Content.ReadAsStringAsync()
+                if ($errorResponse.Content) {
+                    $errorBody = $errorResponse.Content.ReadAsStringAsync().Result
+                    Write-Action1Log "Error Response Body:" -Level TRACE
+                    Write-Action1Log $errorBody -Level TRACE
+                }
             }
             catch {
                 Write-Action1Log "Could not read error response body: $_" -Level TRACE
             }
             Write-Action1Log "=====================================" -Level TRACE
+        }
+
+        # Also check ErrorDetails which PowerShell often populates
+        if ($_.ErrorDetails.Message) {
+            Write-Action1Log "ErrorDetails.Message:" -Level TRACE
+            Write-Action1Log $_.ErrorDetails.Message -Level TRACE
         }
 
         if ($_.ErrorDetails.Message) {
@@ -4520,7 +4527,7 @@ function Get-Action1ApiCredentials {
             # Try to check automations access
             try {
                 $null = Invoke-Action1ApiRequest `
-                    -Endpoint "automations/$testOrgId`?limit=1" `
+                    -Endpoint "policies/schedules/$testOrgId`?limit=1" `
                     -Method GET
                 $permissions += 'Automations:Read'
                 Write-Action1Log "Automations access confirmed" -Level DEBUG
@@ -6057,7 +6064,7 @@ function Get-Action1AppPackage {
         if ($PackageId) {
             # Fetch package with all fields to get embedded versions array
             $response = Invoke-Action1ApiRequest `
-                -Endpoint "software-repository/$OrganizationId/$PackageId?fields=*" `
+                -Endpoint "software-repository/$OrganizationId/$PackageId`?fields=*" `
                 -Method GET
 
             $versions = if ($response.versions) { @($response.versions) } else { @() }
@@ -6546,7 +6553,7 @@ function Get-Action1Automation {
         if ($AutomationId) {
             Write-Action1Log "Fetching automation details: $AutomationId" -Level INFO
             $automation = Invoke-Action1ApiRequest `
-                -Endpoint "organizations/$OrganizationId/automations/$AutomationId" `
+                -Endpoint "policies/schedules/$OrganizationId/$AutomationId" `
                 -Method GET
             return $automation
         }
@@ -6554,7 +6561,7 @@ function Get-Action1Automation {
         # List all automations
         Write-Action1Log "Fetching automations for organization $OrganizationId..." -Level INFO
         $response = Invoke-Action1ApiRequest `
-            -Endpoint "organizations/$OrganizationId/automations?limit=100" `
+            -Endpoint "policies/schedules/$OrganizationId`?limit=100" `
             -Method GET
 
         $automations = if ($response.items) { $response.items } else { @($response) }
@@ -6600,7 +6607,7 @@ function Get-Action1Automation {
         # Fetch full automation details
         Write-Action1Log "Fetching automation details..." -Level INFO
         $automationDetails = Invoke-Action1ApiRequest `
-            -Endpoint "organizations/$OrganizationId/automations/$($selectedAutomation.id)" `
+            -Endpoint "policies/schedules/$OrganizationId/$($selectedAutomation.id)" `
             -Method GET
 
         return $automationDetails
@@ -6631,7 +6638,8 @@ function Copy-Action1Automation {
         Array of automation IDs to copy. If not specified, prompts for selection.
 
     .PARAMETER IncludeGroups
-        If specified, copies referenced endpoint groups to destinations (default: $true).
+        If specified, copies referenced endpoint groups to destinations (default: $false).
+        Groups will be created in destination if they don't exist.
 
     .EXAMPLE
         Copy-Action1Automation
@@ -6652,7 +6660,7 @@ function Copy-Action1Automation {
         [string[]]$AutomationIds,
 
         [Parameter()]
-        [bool]$IncludeGroups = $true
+        [bool]$IncludeGroups = $false
     )
 
     try {
@@ -6748,12 +6756,31 @@ function Copy-Action1Automation {
             }
         }
 
+        # Ask about including groups (only if not explicitly set via parameter)
+        if (-not $PSBoundParameters.ContainsKey('IncludeGroups')) {
+            Write-Host "`nInclude endpoint group assignments?" -ForegroundColor Cyan
+            Write-Host "  If enabled, groups will be created in destinations if they don't exist."
+            $groupInput = Read-Host "Include groups? (y/N)"
+            if ($groupInput -eq 'y' -or $groupInput -eq 'Y') {
+                $IncludeGroups = $true
+                Write-Host "Groups will be included" -ForegroundColor Green
+            }
+            else {
+                Write-Host "Groups will NOT be included" -ForegroundColor Yellow
+            }
+        }
+
         # Confirm the operation
         Write-Host "`nCopy Summary:" -ForegroundColor Yellow
         Write-Host "Source: $sourceOrgName"
         Write-Host "Automations: $($AutomationIds.Count)"
         Write-Host "Destinations: $($DestinationOrgIds.Count) organization(s)"
-        Write-Host "Include Groups: $IncludeGroups"
+        if ($IncludeGroups) {
+            Write-Host "Endpoint Groups: Will copy group assignments (create if needed)"
+        }
+        else {
+            Write-Host "Endpoint Groups: Will target ALL endpoints (no group assignments)"
+        }
 
         $confirm = Read-Host "`nProceed with copy? (Y/n)"
         if ($confirm -eq 'n' -or $confirm -eq 'N') {
@@ -6780,6 +6807,12 @@ function Copy-Action1Automation {
             }
             if ($automation.endpoint_groups) {
                 $referencedGroupIds += $automation.endpoint_groups | ForEach-Object { $_.id }
+            }
+            # Also check 'endpoints' array (API returns this for schedule-based automations)
+            if ($automation.endpoints) {
+                $referencedGroupIds += $automation.endpoints |
+                    Where-Object { $_.type -eq 'EndpointGroup' } |
+                    ForEach-Object { $_.id }
             }
 
             # Get group details from source if we need to copy them
@@ -6840,36 +6873,93 @@ function Copy-Action1Automation {
                     # Prepare automation data for creation
                     $newAutomationData = @{
                         name = $automation.name
-                        description = if ($automation.description) { $automation.description } else { "" }
-                        enabled = $automation.enabled
                     }
 
-                    # Copy relevant properties
+                    # Add description if present
+                    if ($automation.description) {
+                        $newAutomationData['description'] = $automation.description
+                    }
+
+                    # Copy schedule settings (for schedule-based automations)
+                    if ($automation.settings) {
+                        $newAutomationData['settings'] = $automation.settings
+                    }
+                    if ($automation.retry_minutes) {
+                        $newAutomationData['retry_minutes'] = $automation.retry_minutes
+                    }
+                    if ($automation.settings_timezone) {
+                        $newAutomationData['settings_timezone'] = $automation.settings_timezone
+                    }
+                    # Note: randomize_start is read-only and cannot be set via API
+
+                    # Copy trigger properties
                     if ($automation.trigger_type) {
                         $newAutomationData['trigger_type'] = $automation.trigger_type
                     }
                     if ($automation.trigger) {
                         $newAutomationData['trigger'] = $automation.trigger
                     }
+
+                    # Copy actions (remove source IDs so API generates new ones)
                     if ($automation.actions) {
-                        $newAutomationData['actions'] = $automation.actions
+                        $cleanActions = @()
+                        foreach ($action in $automation.actions) {
+                            $cleanAction = @{
+                                name = $action.name
+                                template_id = $action.template_id
+                            }
+                            if ($action.params) {
+                                $cleanAction['params'] = $action.params
+                            }
+                            $cleanActions += $cleanAction
+                        }
+                        $newAutomationData['actions'] = $cleanActions
                     }
+
                     if ($automation.schedule) {
                         $newAutomationData['schedule'] = $automation.schedule
                     }
 
                     # Update endpoint group references with mapped IDs
-                    if ($automation.endpoint_group_id -and $groupIdMapping.ContainsKey($automation.endpoint_group_id)) {
-                        $newAutomationData['endpoint_group_id'] = $groupIdMapping[$automation.endpoint_group_id]
+                    if ($IncludeGroups) {
+                        if ($automation.endpoint_group_id -and $groupIdMapping.ContainsKey($automation.endpoint_group_id)) {
+                            $newAutomationData['endpoint_group_id'] = $groupIdMapping[$automation.endpoint_group_id]
+                        }
+                        elseif ($automation.endpoint_group_id) {
+                            $newAutomationData['endpoint_group_id'] = $automation.endpoint_group_id
+                        }
+
+                        # Handle 'endpoints' array format (schedule-based automations)
+                        if ($automation.endpoints -and $automation.endpoints.Count -gt 0) {
+                            $mappedEndpoints = @()
+                            foreach ($ep in $automation.endpoints) {
+                                if ($ep.type -eq 'EndpointGroup' -and $groupIdMapping.ContainsKey($ep.id)) {
+                                    $mappedEndpoints += @{
+                                        id = $groupIdMapping[$ep.id]
+                                        type = 'EndpointGroup'
+                                    }
+                                }
+                                else {
+                                    $mappedEndpoints += $ep
+                                }
+                            }
+                            $newAutomationData['endpoints'] = $mappedEndpoints
+                        }
                     }
-                    elseif ($automation.endpoint_group_id) {
-                        $newAutomationData['endpoint_group_id'] = $automation.endpoint_group_id
+                    else {
+                        # Default to ALL endpoints when not copying groups
+                        $newAutomationData['endpoints'] = @(
+                            @{
+                                id = 'ALL'
+                                type = 'EndpointGroup'
+                            }
+                        )
                     }
 
                     # Create the automation in destination
                     Write-Action1Log "Creating automation in destination..." -Level DEBUG
                     $response = Invoke-Action1ApiRequest `
-                        -Endpoint "organizations/$destOrgId/automations" `
+                        -Endpoint "policies/schedules/$destOrgId" `
                         -Method POST `
                         -Body $newAutomationData
 
