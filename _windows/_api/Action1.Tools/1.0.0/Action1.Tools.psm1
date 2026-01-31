@@ -7254,6 +7254,7 @@ function Export-Action1AppPackage {
         [Parameter()]
         [string]$OutputPath = (Get-Location).Path,
 
+        # FIXME: Unable to find way to get a download uri via API. This must be pushed to the agent during deployment.
         [Parameter()]
         [switch]$SkipInstallerDownload,
 
@@ -7308,11 +7309,12 @@ function Export-Action1AppPackage {
                 $selectedRepo = $null
 
                 while ($null -eq $selectedRepo) {
+                    Clear-Host
                     $startIndex = $currentPage * $PageSize
                     $endIndex = [Math]::Min($startIndex + $PageSize, $totalCount)
                     $pageRepos = $allRepos[$startIndex..($endIndex - 1)]
 
-                    Write-Host "`nBuilt-in Repositories (Page $($currentPage + 1) of $totalPages, Total: $totalCount):" -ForegroundColor Cyan
+                    Write-Host "Built-in Repositories (Page $($currentPage + 1) of $totalPages, Total: $totalCount):" -ForegroundColor Cyan
                     for ($i = 0; $i -lt $pageRepos.Count; $i++) {
                         $repo = $pageRepos[$i]
                         $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
@@ -7637,8 +7639,11 @@ function Export-Action1AppPackage {
                     $scriptName = $action.Name -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
                     $scriptName = $scriptName -replace '_+', '_' -replace '^_|_$', ''
 
-                    # Build filename: <install/uninstall>_<priority>_<name>.ps1
-                    $scriptFileName = "${whenPrefix}_${priority}_${scriptName}.ps1"
+                    # Determine script extension based on language (Bash = .sh, PowerShell = .ps1)
+                    $scriptExt = if ($action.Params.run_script_language -eq "Bash") { ".sh" } else { ".ps1" }
+
+                    # Build filename: <install/uninstall>_<priority>_<name>.<ext>
+                    $scriptFileName = "${whenPrefix}_${priority}_${scriptName}${scriptExt}"
                     $scriptFilePath = Join-Path $scriptsPath $scriptFileName
 
                     # Create scripts folder if needed
@@ -7831,11 +7836,12 @@ function Export-Action1AppRepo {
                 $selectedRepo = $null
 
                 while ($null -eq $selectedRepo) {
+                    Clear-Host
                     $startIndex = $currentPage * $PageSize
                     $endIndex = [Math]::Min($startIndex + $PageSize, $totalCount)
                     $pageRepos = $allRepos[$startIndex..($endIndex - 1)]
 
-                    Write-Host "`nBuilt-in Repositories (Page $($currentPage + 1) of $totalPages, Total: $totalCount):" -ForegroundColor Cyan
+                    Write-Host "Built-in Repositories (Page $($currentPage + 1) of $totalPages, Total: $totalCount):" -ForegroundColor Cyan
                     for ($i = 0; $i -lt $pageRepos.Count; $i++) {
                         $repo = $pageRepos[$i]
                         $platform = if ($repo.platform) { " [$($repo.platform)]" } else { "" }
