@@ -9,12 +9,21 @@
     PowerShellVersion = '7.0'
 
     FunctionsToExport = @(
+        # Generic API Functions (PSAction1 compatible)
+        'Get-Action1',
+        'New-Action1',
+        'Update-Action1',
+        'Start-Action1Requery',
+        'Start-Action1PackageUpload',
+
         # Connection & Configuration
         'Test-Action1Connection',
         'Set-Action1ApiCredentials',
         'Get-Action1ApiCredentials',
         'Set-Action1LogLevel',
         'Get-Action1LogLevel',
+        'Set-Action1Interactive',
+        'Get-Action1Interactive',
 
         # Organizations & Groups
         'Get-Action1Organization',
@@ -57,6 +66,11 @@ v1.0.0 - Initial release
 - Automation copy between organizations
 - Software deployment functions
 - Export functionality for packages and repositories
+- Generic API functions (Get-Action1, New-Action1, Update-Action1)
+- Interactive mode toggle (Set-Action1Interactive)
+- Package upload (Start-Action1PackageUpload)
+- Data requery support (Start-Action1Requery)
+- Support for endpoints, vulnerabilities, reports, and more
 '@
         }
     }

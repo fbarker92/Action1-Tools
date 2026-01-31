@@ -17,6 +17,7 @@ $script:Action1RegionUrls = @{
 $script:DefaultMsiSwitches = "/qn /norestart"
 $script:LogLevel = "SILENT"
 $script:LogFilePath = $null
+$script:Interactive = $true  # Global flag to enable/disable interactive prompts
 
 # Cross-platform configuration directory path
 $script:Action1ConfigDir = if ($IsWindows) {
@@ -819,6 +820,63 @@ function Get-Action1LogLevel {
         Level = $script:LogLevel
         LogFile = $script:LogFilePath
     }
+}
+
+function Set-Action1Interactive {
+    <#
+    .SYNOPSIS
+        Sets whether the module uses interactive prompts.
+
+    .DESCRIPTION
+        When enabled (default), the module will prompt for missing required values
+        such as organization selection, credentials, etc.
+        When disabled, functions will fail if required values are not provided.
+
+    .PARAMETER Enabled
+        $true to enable interactive prompts, $false to disable.
+
+    .EXAMPLE
+        Set-Action1Interactive -Enabled $true
+        # Enables interactive prompts (default behavior)
+
+    .EXAMPLE
+        Set-Action1Interactive -Enabled $false
+        # Disables prompts - useful for scripting/automation
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [bool]$Enabled
+    )
+
+    $script:Interactive = $Enabled
+
+    if ($Enabled) {
+        Write-Host "Interactive mode enabled - will prompt for missing values" -ForegroundColor Green
+    } else {
+        Write-Host "Interactive mode disabled - functions will fail if required values not provided" -ForegroundColor Yellow
+    }
+}
+
+function Get-Action1Interactive {
+    <#
+    .SYNOPSIS
+        Gets the current interactive mode setting.
+
+    .DESCRIPTION
+        Returns whether the module will prompt for missing required values.
+
+    .EXAMPLE
+        Get-Action1Interactive
+        # Returns $true or $false
+
+    .EXAMPLE
+        if (Get-Action1Interactive) { Write-Host "Prompts enabled" }
+    #>
+    [CmdletBinding()]
+    param()
+
+    return $script:Interactive
 }
 
 #endregion
@@ -6329,6 +6387,316 @@ function Get-Action1AppRepo {
     }
 }
 
+function Get-Action1 {
+    <#
+    .SYNOPSIS
+        Generic retrieval function for Action1 API resources.
+
+    .DESCRIPTION
+        Universal function to retrieve any Action1 resource type. Similar to the
+        official PSAction1 module's Get-Action1 function, providing a single entry
+        point for all data retrieval operations.
+
+        Supports pagination automatically and can return raw JSON or PowerShell objects.
+
+    .PARAMETER Query
+        The type of resource to query. Valid options:
+        - Organizations: List all organizations
+        - Endpoints: List endpoints in an organization
+        - EndpointGroups: List endpoint groups
+        - Automations: List automations/policies
+        - Schedules: List scheduled automations
+        - Scripts: List scripts
+        - Apps: List software repository apps
+        - AppVersions: List app versions
+        - Vulnerabilities: List vulnerabilities
+        - MissingPatches: List missing patches
+        - InstalledSoftware: List installed software
+        - InstalledUpdates: List installed updates
+        - Reports: List reports
+        - ReportData: Get report data
+
+    .PARAMETER OrganizationId
+        Organization ID (required for most queries except Organizations).
+
+    .PARAMETER Id
+        Specific resource ID to retrieve details for.
+
+    .PARAMETER Filter
+        Additional filter parameters as a hashtable.
+
+    .PARAMETER Limit
+        Maximum number of results to return per page. Default is 100.
+
+    .PARAMETER All
+        Retrieve all pages of results (may be slow for large datasets).
+
+    .PARAMETER Raw
+        Return the raw API response instead of just the items.
+
+    .EXAMPLE
+        Get-Action1 -Query Organizations
+        # List all organizations
+
+    .EXAMPLE
+        Get-Action1 -Query Endpoints -OrganizationId "org123"
+        # List all endpoints in organization
+
+    .EXAMPLE
+        Get-Action1 -Query Vulnerabilities -OrganizationId "org123" -All
+        # Get all vulnerabilities with pagination
+
+    .EXAMPLE
+        Get-Action1 -Query EndpointGroups -OrganizationId "org123" -Id "group456"
+        # Get specific endpoint group
+
+    .EXAMPLE
+        Get-Action1 -Query InstalledSoftware -OrganizationId "org123" -Filter @{endpoint_id = "ep789"}
+        # Get installed software for specific endpoint
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet(
+            'Organizations',
+            'Endpoints',
+            'EndpointGroups',
+            'Automations',
+            'Schedules',
+            'Scripts',
+            'Apps',
+            'AppVersions',
+            'Vulnerabilities',
+            'MissingPatches',
+            'InstalledSoftware',
+            'InstalledUpdates',
+            'Reports',
+            'ReportData'
+        )]
+        [string]$Query,
+
+        [Parameter()]
+        [string]$OrganizationId,
+
+        [Parameter()]
+        [string]$Id,
+
+        [Parameter()]
+        [hashtable]$Filter,
+
+        [Parameter()]
+        [int]$Limit = 100,
+
+        [Parameter()]
+        [switch]$All,
+
+        [Parameter()]
+        [switch]$Raw
+    )
+
+    # Build endpoint URL based on query type
+    $endpoint = switch ($Query) {
+        'Organizations' { 'organizations' }
+        'Endpoints' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Endpoints query."
+                }
+            }
+            if ($Id) { "endpoints/$OrganizationId/$Id" }
+            else { "endpoints/$OrganizationId" }
+        }
+        'EndpointGroups' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for EndpointGroups query."
+                }
+            }
+            if ($Id) { "organizations/$OrganizationId/endpoint_groups/$Id" }
+            else { "organizations/$OrganizationId/endpoint_groups" }
+        }
+        'Automations' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Automations query."
+                }
+            }
+            if ($Id) { "policies/$OrganizationId/policies/$Id" }
+            else { "policies/$OrganizationId" }
+        }
+        'Schedules' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Schedules query."
+                }
+            }
+            if ($Id) { "policies/schedules/$OrganizationId/$Id" }
+            else { "policies/schedules/$OrganizationId" }
+        }
+        'Scripts' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Scripts query."
+                }
+            }
+            if ($Id) { "scripts/$OrganizationId/$Id" }
+            else { "scripts/$OrganizationId" }
+        }
+        'Apps' {
+            if ($Id) { "apps/$Id" }
+            else { "apps" }
+        }
+        'AppVersions' {
+            if (-not $Id) { throw "App Id is required for AppVersions query." }
+            "apps/$Id/versions"
+        }
+        'Vulnerabilities' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Vulnerabilities query."
+                }
+            }
+            "data/$OrganizationId/vulnerabilities"
+        }
+        'MissingPatches' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for MissingPatches query."
+                }
+            }
+            "data/$OrganizationId/missing_patches"
+        }
+        'InstalledSoftware' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for InstalledSoftware query."
+                }
+            }
+            "data/$OrganizationId/installed_software"
+        }
+        'InstalledUpdates' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for InstalledUpdates query."
+                }
+            }
+            "data/$OrganizationId/installed_updates"
+        }
+        'Reports' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Reports query."
+                }
+            }
+            if ($Id) { "reports/$OrganizationId/$Id" }
+            else { "reports/$OrganizationId" }
+        }
+        'ReportData' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for ReportData query."
+                }
+            }
+            if (-not $Id) { throw "Report Id is required for ReportData query." }
+            "reports/$OrganizationId/$Id/data"
+        }
+    }
+
+    try {
+        Write-Action1Log "Querying $Query..." -Level INFO
+
+        # Build query parameters
+        $queryParams = @{ limit = $Limit }
+        if ($Filter) {
+            foreach ($key in $Filter.Keys) {
+                $queryParams[$key] = $Filter[$key]
+            }
+        }
+
+        $allResults = @()
+        $nextPage = $null
+
+        do {
+            # Add pagination cursor if continuing
+            if ($nextPage) {
+                $queryParams['page'] = $nextPage
+            }
+
+            # Build query string
+            $queryString = ($queryParams.GetEnumerator() | ForEach-Object {
+                "$($_.Key)=$([uri]::EscapeDataString($_.Value))"
+            }) -join '&'
+
+            $fullEndpoint = if ($queryString) { "$endpoint`?$queryString" } else { $endpoint }
+
+            $response = Invoke-Action1ApiRequest -Endpoint $fullEndpoint -Method GET
+
+            if ($Raw) {
+                return $response
+            }
+
+            # Extract items
+            $items = if ($response.items) { $response.items } else { @($response) }
+            $allResults += $items
+
+            # Check for next page
+            $nextPage = $response.next_page
+            if (-not $All) { $nextPage = $null }
+
+        } while ($nextPage)
+
+        Write-Action1Log "Retrieved $($allResults.Count) $Query items" -Level INFO
+        return $allResults
+    }
+    catch {
+        Write-Error "Failed to retrieve $Query`: $($_.Exception.Message)"
+    }
+}
+
 function Get-Action1Organization {
     <#
     .SYNOPSIS
@@ -8129,6 +8497,457 @@ function Export-Action1AppRepo {
 }
 
 # Module initialization
+function Start-Action1PackageUpload {
+    <#
+    .SYNOPSIS
+        Uploads a software package file to Action1 Software Repository.
+
+    .DESCRIPTION
+        Compatible wrapper for uploading software packages to Action1 using the
+        chunked upload protocol. Similar to the official PSAction1 module's
+        Start-Action1PackageUpload function.
+
+        Supports configurable chunk sizes and multiple platforms.
+
+    .PARAMETER PackageId
+        The software repository package ID to upload to.
+
+    .PARAMETER VersionId
+        The version ID to upload the file to.
+
+    .PARAMETER FilePath
+        Path to the installer file to upload.
+
+    .PARAMETER Platform
+        Target platform. Valid values:
+        - Windows_64 (default)
+        - Windows_32
+        - Windows_ARM64
+        - Mac_AppleSilicon
+        - Mac_IntelCPU
+
+    .PARAMETER OrganizationId
+        Organization ID. If not specified, uses "all" for enterprise-wide.
+
+    .PARAMETER BufferSizeMB
+        Size of upload chunks in megabytes. Default is 24MB.
+        Minimum is 5MB, maximum is 100MB.
+
+    .EXAMPLE
+        Start-Action1PackageUpload -PackageId "pkg123" -VersionId "ver456" -FilePath "C:\installer.msi"
+        # Upload with defaults (Windows_64, 24MB chunks)
+
+    .EXAMPLE
+        Start-Action1PackageUpload -PackageId "pkg123" -VersionId "ver456" `
+            -FilePath "C:\installer.exe" -Platform "Windows_32" -BufferSizeMB 32
+        # Upload 32-bit installer with 32MB chunks
+
+    .EXAMPLE
+        Start-Action1PackageUpload -PackageId "pkg123" -VersionId "ver456" `
+            -FilePath "/path/to/app.pkg" -Platform "Mac_AppleSilicon" `
+            -OrganizationId "org789"
+        # Upload Mac installer to specific organization
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$PackageId,
+
+        [Parameter(Mandatory)]
+        [string]$VersionId,
+
+        [Parameter(Mandatory)]
+        [ValidateScript({ Test-Path $_ -PathType Leaf })]
+        [string]$FilePath,
+
+        [Parameter()]
+        [ValidateSet('Windows_64', 'Windows_32', 'Windows_ARM64', 'Mac_AppleSilicon', 'Mac_IntelCPU')]
+        [string]$Platform = 'Windows_64',
+
+        [Parameter()]
+        [string]$OrganizationId = 'all',
+
+        [Parameter()]
+        [ValidateRange(5, 100)]
+        [int]$BufferSizeMB = 24
+    )
+
+    try {
+        Write-Action1Log "Starting package upload: $FilePath" -Level INFO
+        Write-Action1Log "Package: $PackageId, Version: $VersionId, Platform: $Platform" -Level DEBUG
+
+        # Resolve full path
+        $fullPath = Resolve-Path $FilePath
+        $fileName = Split-Path $fullPath -Leaf
+        $fileSize = (Get-Item $fullPath).Length
+
+        Write-Host "`n=== Action1 Package Upload ===" -ForegroundColor Cyan
+        Write-Host "File: $fileName" -ForegroundColor White
+        Write-Host "Size: $(ConvertTo-FileSize $fileSize)" -ForegroundColor White
+        Write-Host "Platform: $Platform" -ForegroundColor White
+        Write-Host "Chunk Size: ${BufferSizeMB}MB" -ForegroundColor White
+
+        # Use the existing chunked upload function
+        $null = Invoke-Action1SoftwareRepoUpload `
+            -FilePath $fullPath `
+            -OrganizationId $OrganizationId `
+            -PackageId $PackageId `
+            -VersionId $VersionId `
+            -Platform $Platform `
+            -ChunkSizeMB $BufferSizeMB
+
+        Write-Host "`nUpload completed successfully!" -ForegroundColor Green
+
+        return @{
+            Success = $true
+            PackageId = $PackageId
+            VersionId = $VersionId
+            FileName = $fileName
+            FileSize = $fileSize
+            Platform = $Platform
+        }
+    }
+    catch {
+        Write-Error "Package upload failed: $($_.Exception.Message)"
+        Write-Action1Log "Package upload failed" -Level ERROR -ErrorRecord $_
+        return @{
+            Success = $false
+            Error = $_.Exception.Message
+        }
+    }
+}
+
+function New-Action1 {
+    <#
+    .SYNOPSIS
+        Generic function to create new Action1 resources.
+
+    .DESCRIPTION
+        Universal function to create any Action1 resource type. Similar to the
+        official PSAction1 module's New-Action1 function.
+
+    .PARAMETER Item
+        The type of resource to create. Valid options:
+        - EndpointGroup: Create a new endpoint group
+        - Automation: Create a new automation/policy
+        - Schedule: Create a new scheduled automation
+        - App: Create a new software repository app
+        - AppVersion: Create a new app version
+
+    .PARAMETER OrganizationId
+        Organization ID (required for most resources).
+
+    .PARAMETER Data
+        Hashtable containing the resource data to create.
+
+    .EXAMPLE
+        New-Action1 -Item EndpointGroup -OrganizationId "org123" -Data @{
+            name = "Windows Servers"
+            description = "All Windows Server endpoints"
+        }
+
+    .EXAMPLE
+        New-Action1 -Item App -OrganizationId "all" -Data @{
+            name = "My Application"
+            vendor = "My Company"
+        }
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('EndpointGroup', 'Automation', 'Schedule', 'App', 'AppVersion')]
+        [string]$Item,
+
+        [Parameter()]
+        [string]$OrganizationId,
+
+        [Parameter(Mandatory)]
+        [hashtable]$Data
+    )
+
+    # Determine endpoint based on item type
+    $endpoint = switch ($Item) {
+        'EndpointGroup' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for EndpointGroup."
+                }
+            }
+            "organizations/$OrganizationId/endpoint_groups"
+        }
+        'Automation' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Automation."
+                }
+            }
+            "policies/$OrganizationId"
+        }
+        'Schedule' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Schedule."
+                }
+            }
+            "policies/schedules/$OrganizationId"
+        }
+        'App' {
+            $orgPart = if ($OrganizationId) { $OrganizationId } else { "all" }
+            "software-repository/$orgPart"
+        }
+        'AppVersion' {
+            if (-not $Data.package_id) { throw "Data must include 'package_id' for AppVersion." }
+            $orgPart = if ($OrganizationId) { $OrganizationId } else { "all" }
+            "software-repository/$orgPart/$($Data.package_id)/versions"
+        }
+    }
+
+    try {
+        Write-Action1Log "Creating new $Item..." -Level INFO
+        $response = Invoke-Action1ApiRequest -Endpoint $endpoint -Method POST -Body $Data
+        Write-Action1Log "Created $Item successfully" -Level INFO
+        return $response
+    }
+    catch {
+        Write-Error "Failed to create $Item`: $($_.Exception.Message)"
+    }
+}
+
+function Update-Action1 {
+    <#
+    .SYNOPSIS
+        Generic function to update or delete Action1 resources.
+
+    .DESCRIPTION
+        Universal function to modify or delete any Action1 resource type. Similar to
+        the official PSAction1 module's Update-Action1 function.
+
+        Includes confirmation prompts for destructive operations.
+
+    .PARAMETER Action
+        The action to perform: Modify, ModifyMembers, or Delete.
+
+    .PARAMETER Type
+        The type of resource to update. Valid options:
+        - EndpointGroup
+        - Automation
+        - Schedule
+        - App
+        - AppVersion
+
+    .PARAMETER Id
+        The resource ID to update/delete.
+
+    .PARAMETER OrganizationId
+        Organization ID (required for most resources).
+
+    .PARAMETER Data
+        Hashtable containing the data to update (for Modify actions).
+
+    .PARAMETER Force
+        Skip confirmation prompts for destructive operations.
+
+    .EXAMPLE
+        Update-Action1 -Action Modify -Type EndpointGroup -Id "grp123" `
+            -OrganizationId "org456" -Data @{ description = "Updated description" }
+
+    .EXAMPLE
+        Update-Action1 -Action Delete -Type App -Id "app789" -Force
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Modify', 'ModifyMembers', 'Delete')]
+        [string]$Action,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('EndpointGroup', 'Automation', 'Schedule', 'App', 'AppVersion')]
+        [string]$Type,
+
+        [Parameter(Mandatory)]
+        [string]$Id,
+
+        [Parameter()]
+        [string]$OrganizationId,
+
+        [Parameter()]
+        [hashtable]$Data,
+
+        [Parameter()]
+        [switch]$Force
+    )
+
+    # Build endpoint
+    $endpoint = switch ($Type) {
+        'EndpointGroup' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for EndpointGroup."
+                }
+            }
+            "organizations/$OrganizationId/endpoint_groups/$Id"
+        }
+        'Automation' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Automation."
+                }
+            }
+            "policies/$OrganizationId/policies/$Id"
+        }
+        'Schedule' {
+            if (-not $OrganizationId) {
+                if ($script:Interactive) {
+                    $selectedOrg = Select-Action1Organization -IncludeAll $false
+                    if (-not $selectedOrg) { throw "No organization selected." }
+                    $OrganizationId = $selectedOrg.Id
+                } else {
+                    throw "OrganizationId is required for Schedule."
+                }
+            }
+            "policies/schedules/$OrganizationId/$Id"
+        }
+        'App' {
+            $orgPart = if ($OrganizationId) { $OrganizationId } else { "all" }
+            "software-repository/$orgPart/$Id"
+        }
+        'AppVersion' {
+            if (-not $Data -or -not $Data.package_id) { throw "Data must include 'package_id' for AppVersion." }
+            $orgPart = if ($OrganizationId) { $OrganizationId } else { "all" }
+            "software-repository/$orgPart/$($Data.package_id)/versions/$Id"
+        }
+    }
+
+    # Determine HTTP method
+    $method = switch ($Action) {
+        'Modify' { 'PATCH' }
+        'ModifyMembers' { 'PATCH' }
+        'Delete' { 'DELETE' }
+    }
+
+    try {
+        # Confirmation for delete
+        if ($Action -eq 'Delete' -and -not $Force) {
+            if (-not $PSCmdlet.ShouldProcess($Id, "Delete $Type")) {
+                Write-Host "Operation cancelled." -ForegroundColor Yellow
+                return
+            }
+        }
+
+        Write-Action1Log "$Action $Type $Id..." -Level INFO
+
+        $params = @{
+            Endpoint = $endpoint
+            Method = $method
+        }
+        if ($Data -and $Action -ne 'Delete') {
+            $params['Body'] = $Data
+        }
+
+        $response = Invoke-Action1ApiRequest @params
+        Write-Action1Log "$Action completed successfully" -Level INFO
+        return $response
+    }
+    catch {
+        Write-Error "Failed to $Action $Type`: $($_.Exception.Message)"
+    }
+}
+
+function Start-Action1Requery {
+    <#
+    .SYNOPSIS
+        Triggers a data refresh for endpoints.
+
+    .DESCRIPTION
+        Requests Action1 to re-query endpoint data including installed software,
+        updates, and report data. Similar to the official PSAction1 module's
+        Start-Action1Requery function.
+
+    .PARAMETER Type
+        The type of data to refresh:
+        - ReportData: Refresh report data
+        - InstalledSoftware: Refresh installed software inventory
+        - InstalledUpdates: Refresh installed updates inventory
+
+    .PARAMETER OrganizationId
+        Organization ID to refresh data for.
+
+    .PARAMETER EndpointId
+        Optional specific endpoint ID. If not specified, refreshes all endpoints.
+
+    .EXAMPLE
+        Start-Action1Requery -Type InstalledSoftware -OrganizationId "org123"
+        # Refresh software inventory for all endpoints in organization
+
+    .EXAMPLE
+        Start-Action1Requery -Type InstalledUpdates -OrganizationId "org123" -EndpointId "ep456"
+        # Refresh updates for specific endpoint
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('ReportData', 'InstalledSoftware', 'InstalledUpdates')]
+        [string]$Type,
+
+        [Parameter()]
+        [string]$OrganizationId,
+
+        [Parameter()]
+        [string]$EndpointId
+    )
+
+    if (-not $OrganizationId) {
+        if ($script:Interactive) {
+            $selectedOrg = Select-Action1Organization -IncludeAll $false
+            if (-not $selectedOrg) { throw "No organization selected." }
+            $OrganizationId = $selectedOrg.Id
+        } else {
+            throw "OrganizationId is required."
+        }
+    }
+
+    $endpoint = switch ($Type) {
+        'ReportData' { "data/$OrganizationId/requery/reports" }
+        'InstalledSoftware' { "data/$OrganizationId/requery/installed_software" }
+        'InstalledUpdates' { "data/$OrganizationId/requery/installed_updates" }
+    }
+
+    $body = @{}
+    if ($EndpointId) {
+        $body['endpoint_id'] = $EndpointId
+    }
+
+    try {
+        Write-Action1Log "Triggering $Type requery for organization $OrganizationId..." -Level INFO
+        $response = Invoke-Action1ApiRequest -Endpoint $endpoint -Method POST -Body $body
+        Write-Host "Requery initiated successfully. Data will be refreshed shortly." -ForegroundColor Green
+        return $response
+    }
+    catch {
+        Write-Error "Failed to trigger requery: $($_.Exception.Message)"
+    }
+}
+
 Write-Verbose "Action1.Tools module loaded"
 
 # Try to load saved credentials if they exist
@@ -8210,25 +9029,43 @@ Register-ArgumentCompleter -CommandName New-Action1AppRepo -ParameterName Versio
 }
 
 Export-ModuleMember -Function @(
-    'Deploy-Action1AppPackage',
-    'Deploy-Action1AppRepo',
-    'Deploy-Action1AppUpdate',
-    'Export-Action1AppPackage',
-    'Export-Action1AppRepo',
-    'New-Action1AppRepo',
-    'New-Action1AppPackage',
-    'Get-Action1AppPackage',
-    'Get-Action1AppRepo',
-    'Remove-Action1AppPackage',
-    'Remove-Action1AppRepo',
+    # Generic API Functions (PSAction1 compatible)
+    'Get-Action1',
+    'New-Action1',
+    'Update-Action1',
+    'Start-Action1Requery',
+    'Start-Action1PackageUpload',
+
+    # Connection & Configuration
     'Test-Action1Connection',
     'Set-Action1ApiCredentials',
     'Get-Action1ApiCredentials',
     'Set-Action1LogLevel',
     'Get-Action1LogLevel',
+    'Set-Action1Interactive',
+    'Get-Action1Interactive',
+
+    # Organizations & Groups
     'Get-Action1Organization',
     'Get-Action1EndpointGroup',
     'New-Action1EndpointGroup',
+
+    # Automations
     'Get-Action1Automation',
-    'Copy-Action1Automation'
+    'Copy-Action1Automation',
+
+    # App Repositories
+    'New-Action1AppRepo',
+    'Get-Action1AppRepo',
+    'Remove-Action1AppRepo',
+    'Export-Action1AppRepo',
+    'Deploy-Action1AppRepo',
+
+    # App Packages
+    'New-Action1AppPackage',
+    'Get-Action1AppPackage',
+    'Remove-Action1AppPackage',
+    'Export-Action1AppPackage',
+    'Deploy-Action1AppPackage',
+    'Deploy-Action1AppUpdate'
 )
