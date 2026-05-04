@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.0+
 
 # Module-level variables
 $script:Action1Region = $null
