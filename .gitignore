@@ -8,3 +8,4 @@ local_mnt/**
 .exe
 .msi
 .msix
+.claude
